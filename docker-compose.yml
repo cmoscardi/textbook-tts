@@ -1,0 +1,75 @@
+services:
+  app:
+    image: node:latest   # or build: .  if you want to use your Dockerfile
+    working_dir: /app
+    volumes:
+      - ./ocr-tts:/app
+    ports:
+      - "5173:5173"
+    command: npm run dev
+    networks:
+      - ttsnet
+    env_file:
+      - .env.development
+
+  ml-service:
+    image: pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
+    container_name: pytorch-cuda
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./ml-service:/app
+      - ./hf-cache:/root/.cache/huggingface
+    working_dir: /app
+    command: ./run.sh
+    ports:
+      - "8000:8000"
+    networks:
+      - ttsnet
+    env_file:
+      - .env.development
+
+  rabbitmq:
+    container_name: rabbitmq
+    image: rabbitmq:latest
+    ports:
+      - 5672:5672
+    networks:
+      - ttsnet
+    env_file:
+      - .env.development
+
+  postgres:
+    image: postgres:17
+    ports:
+      - 5432:5432
+    volumes:
+      - ./database:/var/lib/postgresql/data
+    env_file:
+      - .env.development
+    networks:
+      - ttsnet
+    healthcheck:
+      test: ['CMD-SHELL', "echo hi; pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: gresau/localstack-persist:4
+    container_name: localstack
+    ports:
+      - 4566:4566
+    environment:
+      - SERVICES=s3
+      - GATEWAY_LISTEN=0.0.0.0:4566
+      - LOCALSTACK_HOST=localstack
+    volumes:
+      - './localstack:/persisted-data'
+    networks:
+      - ttsnet
+
+networks:
+  ttsnet:
+    name: ttsnet
