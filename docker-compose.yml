@@ -7,8 +7,6 @@ services:
     ports:
       - "5173:5173"
     command: npm run dev
-    networks:
-      - ttsnet
     env_file:
       - .env.development
 
@@ -25,8 +23,6 @@ services:
     command: ./run.sh
     ports:
       - "8000:8000"
-    networks:
-      - ttsnet
     env_file:
       - .env.development
 
@@ -35,8 +31,6 @@ services:
     image: rabbitmq:latest
     ports:
       - 5672:5672
-    networks:
-      - ttsnet
     env_file:
       - .env.development
 
@@ -48,8 +42,6 @@ services:
       - ./database:/var/lib/postgresql/data
     env_file:
       - .env.development
-    networks:
-      - ttsnet
     healthcheck:
       test: ['CMD-SHELL', "echo hi; pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -67,9 +59,4 @@ services:
       - LOCALSTACK_HOST=localstack
     volumes:
       - './localstack:/persisted-data'
-    networks:
-      - ttsnet
 
-networks:
-  ttsnet:
-    name: ttsnet
