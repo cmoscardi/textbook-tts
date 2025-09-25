@@ -1,25 +1,26 @@
 import { Outlet, Link } from "react-router-dom";
+import { Auth } from '@supabase/auth-ui-react'
+import { ThemeSupa } from '@supabase/auth-ui-shared'
+import { supabase } from './lib/supabase.js';
+import { useSession } from './lib/SessionContext.jsx';
 
 export default function Layout() {
-    return (
+  const { session, loading } = useSession();
+
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if(!session) {
+    return (<Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} />);
+  }
+  return (
     <div className="w-full min-h-screen flex flex-col">
-      {/* Navbar */}
-      <nav className="bg-blue-600 text-white p-4 flex gap-6">
-        <Link to="/" className="hover:underline">
-          Home
-        </Link>
-        <Link to="/about" className="hover:underline">
-          About
-        </Link>
-        <Link to="/contact" className="hover:underline">
-          Contact
-        </Link>
-      </nav>
 
       {/* Main container with sidebar and content */}
       <div className="flex flex-1">
         {/* Vertical Toolbar */}
-        <div className="bg-gray-200 border-r border-gray-300 w-48 p-3">
+        <div className="bg-gray-200 border-r border-gray-300 w-48 p-3 flex flex-col justify-between">
           <div className="flex flex-col gap-3">
             <Link 
               to="/upload" 
@@ -40,6 +41,16 @@ export default function Layout() {
               Show Files
             </Link>
           </div>
+          
+          <button 
+            onClick={() => supabase.auth.signOut()}
+            className="flex items-center gap-2 px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Logout
+          </button>
         </div>
 
         {/* Page content */}

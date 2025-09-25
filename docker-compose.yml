@@ -2,6 +2,8 @@ services:
   app:
     image: node:latest   # or build: .  if you want to use your Dockerfile
     working_dir: /app
+    networks:
+      - ttsnet
     volumes:
       - ./ocr-tts:/app
     ports:
@@ -19,12 +21,15 @@ services:
     volumes:
       - ./ml-service:/app
       - ./hf-cache:/root/.cache/huggingface
+      - ./dl-cache:/root/.cache/datalab
     working_dir: /app
     command: ./run.sh
     ports:
-      - "8000:8000"
+      - "8001:8001"
     env_file:
       - .env.development
+    networks:
+      - ttsnet
 
   rabbitmq:
     container_name: rabbitmq
@@ -33,20 +38,8 @@ services:
       - 5672:5672
     env_file:
       - .env.development
-
-  postgres:
-    image: postgres:17
-    ports:
-      - 5432:5432
-    volumes:
-      - ./database:/var/lib/postgresql/data
-    env_file:
-      - .env.development
-    healthcheck:
-      test: ['CMD-SHELL', "echo hi; pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    networks:
+      - ttsnet
 
   localstack:
     image: gresau/localstack-persist:4
@@ -59,4 +52,10 @@ services:
       - LOCALSTACK_HOST=localstack
     volumes:
       - './localstack:/persisted-data'
+    networks:
+      - ttsnet
 
+
+networks:
+  ttsnet:
+    external: true

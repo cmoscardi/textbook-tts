@@ -5,6 +5,9 @@ apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     git \
+    postgresql-client \
+    libpq-dev \
+
 
 pip install librosa torchaudio resemble-perth safetensors transformers conformer s3tokenizer diffusers omegaconf
 #pip install chatterbox-tts --no-dependencies
@@ -13,4 +16,6 @@ pip install git+https://github.com/rsxdalv/chatterbox.git@faster --no-dependenci
 
 pip install python-doctr
 pip install fastapi uvicorn[standard] python-multipart pydantic
-pip install celery
+pip install celery sqlalchemy psycopg2
+pip install marker-pdf
+pip install jupyter watchdog

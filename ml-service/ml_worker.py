@@ -1,12 +1,13 @@
 
+import gc
 import os
+import time
 from io import BytesIO
 from chatterbox.tts import ChatterboxTTS
 from celery import Celery
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
 import requests
-import torch
 import torchaudio as ta
 
 
@@ -18,31 +19,36 @@ app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postg
 app.conf.update(broker_connection_retry_on_startup=True)
 
 # Initialize the OCR predictor
-device = torch.device('cuda')
-predictor = ocr_predictor(pretrained=True).to(device)
-tts_model = ChatterboxTTS.from_pretrained(device="cuda")
 
 @app.task()
 def convert_file(file_url):
+    start = time.time()
+    import torch
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+    from marker.output import text_from_rendered
     # Handle file URLs and HTTP URLs differently
     if file_url.startswith("file://"):
         # Remove file:// prefix and load directly from file path
-        file_path = file_url[7:]  # Remove "file://" prefix
-        doc = DocumentFile.from_pdf(file_path)
+        file_path = file_url[7:-1]  # Remove "file://" prefix and trailing /
+        print("loading file: ", file_path)
     else:
-        # Handle HTTP/HTTPS URLs
-        response = requests.get(pdf_url)
-        response.raise_for_status()
-        
-        # Create a DocumentFile from the PDF bytes
-        pdf_bytes = BytesIO(response.content)
-        doc = DocumentFile.from_pdf(pdf_bytes)
+        raise NotImplementedError
 
 
     # Perform OCR
-    result = predictor(doc)
+    converter = PdfConverter(
+        artifact_dict=create_model_dict(),
+    )
+    res = converter(file_path)
+    text, _, images = text_from_rendered(res)
+    del converter
+    gc.collect()
+    torch.cuda.empty_cache()
+    with open("test-out.txt", "w+") as text_out_f:
+        text_out_f.write(text)
+        text_out_f.write("\n")
 
-    text = result.render().replace("\n", " ")
     def split_into_word_chunks(text, chunk_size=1024):
         words = text.split()  # split by any whitespace
         chunks = [
@@ -55,6 +61,7 @@ def convert_file(file_url):
     import re
     sentences = re.split(r'(?<=[.!?]) +', text)
     wavs = []
+    tts_model = ChatterboxTTS.from_pretrained(device="cuda")
     for sentence in sentences:
         wavs.append(tts_model.generate(sentence))
     combined_audio = torch.cat(wavs, dim=1)
@@ -66,5 +73,8 @@ def convert_file(file_url):
     #ta.save("test-2.wav", wav, model.sr)
     end = time.time()
     print(end - start, "seconds elapsed")
+    del tts_model
+    gc.collect()
+    torch.cuda.empty_cache()
     return "OK"
 

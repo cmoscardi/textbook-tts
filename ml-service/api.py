@@ -24,5 +24,5 @@ def ocr(request: OCRRequest):
     Returns:
         dict: Task ID for the OCR job
     """
-    fut = convert_file.delay(request.pdf_url)
+    fut = convert_file.delay(str(request.pdf_url))
     return {"id": fut.id}

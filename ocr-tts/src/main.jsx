@@ -4,7 +4,10 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import './index.css'
 import App from './App.jsx'
 import About from './pages/About.jsx'
+import Upload from './pages/Upload.jsx'
+import Files from './pages/Files.jsx'
 import Layout from "./Layout.jsx";
+import { SessionProvider } from './lib/SessionContext.jsx';
 
 const router = createBrowserRouter([
   {
@@ -13,11 +16,17 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <App /> }, // default "/" route
       { path: "about", element: <About /> },
+      { path: "upload", element: <Upload /> },
+      { path: "files", element: <Files /> },
     ]
   },
 ]);
 
 
 createRoot(document.getElementById('root')).render(
-  <RouterProvider router={router} />
+  <StrictMode>
+    <SessionProvider>
+      <RouterProvider router={router} />
+    </SessionProvider>
+  </StrictMode>
 )

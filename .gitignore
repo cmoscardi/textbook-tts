@@ -32,3 +32,4 @@ hf-cache/*
 ml-service/*.pdf
 
 __pycache__
+localstack
