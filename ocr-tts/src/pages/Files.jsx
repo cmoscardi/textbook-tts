@@ -63,6 +63,12 @@ export default function Files() {
     }
   };
 
+  const handleConvert = async (file) => {
+    // TODO: Implement conversion functionality
+    console.log('Convert file:', file);
+    setError('Convert functionality coming soon!');
+  };
+
   const handleDelete = async (file) => {
     if (!confirm(`Are you sure you want to delete "${file.file_name}"?`)) {
       return;
@@ -167,6 +173,9 @@ export default function Files() {
                     Uploaded
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Convert
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
@@ -194,6 +203,17 @@ export default function Files() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {formatDate(file.uploaded_at)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <button
+                        onClick={() => handleConvert(file)}
+                        className="text-green-600 hover:text-green-900 flex items-center gap-1 px-3 py-1 border border-green-600 rounded hover:bg-green-50 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                        </svg>
+                        Convert
+                      </button>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
