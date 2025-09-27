@@ -2,6 +2,7 @@
 logs
 *.log
 !supabase-env/volumes/logs
+supabase-env/volumes/db/data
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
