@@ -1,11 +1,14 @@
 services:
   app:
-    image: node:latest   # or build: .  if you want to use your Dockerfile
+    build:
+      context: ./ocr-tts
+      dockerfile: Dockerfile
     working_dir: /app
     networks:
       - ttsnet
     volumes:
       - ./ocr-tts:/app
+      - /app/node_modules
     ports:
       - "5173:5173"
     command: npm run dev
@@ -13,7 +16,9 @@ services:
       - .env.development
 
   ml-service:
-    image: pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
     container_name: pytorch-cuda
     runtime: nvidia
     environment:
