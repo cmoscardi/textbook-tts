@@ -20,9 +20,9 @@ services:
       context: ./ml-service
       dockerfile: Dockerfile
     container_name: pytorch-cuda
-    runtime: nvidia
+    runtime: ${DOCKER_RUNTIME:-runc}
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-none}
     volumes:
       - ./ml-service:/app
       - ./hf-cache:/root/.cache/huggingface
