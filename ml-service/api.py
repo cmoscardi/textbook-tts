@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, AnyUrl, Field
 import logging
 import time
@@ -14,7 +15,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-logger.info("FastAPI application initialized")
+
+# Add CORS middleware to allow all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logger.info("FastAPI application initialized with CORS enabled")
 
 
 class OCRRequest(BaseModel):
