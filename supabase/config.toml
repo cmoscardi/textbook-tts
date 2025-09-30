@@ -1,4 +1,5 @@
 [db.migrations]
 schema_paths = [
+  "./schemas/files.sql",
   "./schemas/*.sql"
 ]
