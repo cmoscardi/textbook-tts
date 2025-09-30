@@ -3,7 +3,7 @@
 
 #./install.sh
 
-uvicorn api:app --reload --host 0.0.0.0 --port 8001 &
+uvicorn api:app --reload --host 0.0.0.0 --port 8001 --access-log &
 
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
