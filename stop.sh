@@ -2,10 +2,10 @@
 #
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-docker network create ttsnet
+#docker network create ttsnet
 cd $SCRIPT_DIR/supabase-env
-docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d
-./custom-init.sh
+docker compose -f docker-compose.yml -f docker-compose.s3.yml down
+#./custom-init.sh
 cd $SCRIPT_DIR
 
 # Check if nvidia runtime is available
@@ -21,4 +21,4 @@ fi
 
 sleep 5
 
-docker compose up -d
+docker compose down
