@@ -64,9 +64,44 @@ export default function Files() {
   };
 
   const handleConvert = async (file) => {
-    // TODO: Implement conversion functionality
-    console.log('Convert file:', file);
-    setError('Convert functionality coming soon!');
+    try {
+      setError('');
+
+      // Get the public URL for the file
+      const { data: urlData } = await supabase.storage
+        .from('files')
+        .createSignedUrl(file.file_path, 3600); // 1 hour expiry
+
+      if (!urlData?.signedUrl) {
+        throw new Error('Failed to generate file URL');
+      }
+
+      // Get ML service URL from environment
+      const mlServiceHost = import.meta.env.VITE_MLSERVICE_HOST || 'http://localhost:8001';
+
+      // Send POST request to ML service
+      const response = await fetch(`${mlServiceHost}/ocr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          pdf_url: urlData.signedUrl
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`ML service error: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log('Conversion started:', result);
+      setError(`Conversion started! Task ID: ${result.id}`);
+
+    } catch (err) {
+      console.error('Convert error:', err);
+      setError(`Failed to start conversion: ${err.message}`);
+    }
   };
 
   const handleDelete = async (file) => {
