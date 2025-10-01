@@ -12,6 +12,7 @@ from doctr.models import ocr_predictor
 import requests
 import torchaudio as ta
 from supabase import create_client, Client
+from pydub import AudioSegment
 
 
 
@@ -131,7 +132,7 @@ def get_file_info(file_url: str):
 
 
 # Storage helper functions
-def upload_audio_file(file_path: str, file_data: bytes, content_type: str = "audio/wav"):
+def upload_audio_file(file_path: str, file_data: bytes, content_type: str = "audio/mpeg"):
     """Upload audio file to Supabase storage"""
     if not supabase:
         logger.warning("Supabase not available - skipping file upload")
@@ -154,7 +155,7 @@ def generate_output_file_path(user_id: str, original_filename: str) -> str:
     """Generate a unique output file path for the converted audio"""
     timestamp = int(time.time())
     base_name = os.path.splitext(original_filename)[0]
-    return f"{user_id}/converted_{timestamp}_{base_name}.wav"
+    return f"{user_id}/converted_{timestamp}_{base_name}.mp3"
 
 
 @app.task()
@@ -181,7 +182,7 @@ def convert_file(file_url):
         if not torch.cuda.is_available():
             logger.warning("No CUDA device available - returning dev mode message")
             if conversion_id:
-                finalize_conversion(conversion_id, "test.wav", "completed")
+                finalize_conversion(conversion_id, "test.mp3", "completed")
             return "no cuda device -- dev mode"
 
         logger.info("CUDA device available, proceeding with processing")
@@ -263,15 +264,22 @@ def convert_file(file_url):
         logger.info("Combining audio segments")
         combined_audio = torch.cat(wavs, dim=1)
 
-        # Save to temporary file first
-        temp_audio_file = f"/tmp/audio_{task_id}.wav"
-        logger.info(f"Saving combined audio to {temp_audio_file}")
-        ta.save(temp_audio_file, combined_audio, tts_model.sr)
+        # Save to temporary WAV file first
+        temp_wav_file = f"/tmp/audio_{task_id}.wav"
+        logger.info(f"Saving combined audio to {temp_wav_file}")
+        ta.save(temp_wav_file, combined_audio, tts_model.sr)
+
+        # Convert WAV to MP3
+        temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
+        logger.info(f"Converting WAV to MP3: {temp_mp3_file}")
+        audio_segment = AudioSegment.from_wav(temp_wav_file)
+        audio_segment.export(temp_mp3_file, format="mp3", bitrate="192k")
+
         update_conversion_progress(conversion_id, 90)
 
-        # Upload audio file to Supabase storage
-        logger.info("Uploading audio file to Supabase storage")
-        with open(temp_audio_file, "rb") as audio_file:
+        # Upload MP3 file to Supabase storage
+        logger.info("Uploading MP3 file to Supabase storage")
+        with open(temp_mp3_file, "rb") as audio_file:
             audio_data = audio_file.read()
 
         # Generate output file path
@@ -295,8 +303,10 @@ def convert_file(file_url):
         torch.cuda.empty_cache()
 
         # Clean up temporary files
-        if os.path.exists(temp_audio_file):
-            os.remove(temp_audio_file)
+        if os.path.exists(temp_wav_file):
+            os.remove(temp_wav_file)
+        if os.path.exists(temp_mp3_file):
+            os.remove(temp_mp3_file)
         if file_path.startswith("/tmp/download_"):
             os.remove(file_path)
 

@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     git \
     postgresql-client \
     libpq-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -25,7 +26,8 @@ RUN pip install python-doctr \
     celery sqlalchemy psycopg2 \
     marker-pdf \
     jupyter watchdog \
-    supabase
+    supabase \
+    pydub
 
 # Copy application code
 COPY . .

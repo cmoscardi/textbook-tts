@@ -183,7 +183,7 @@ export default function Files() {
       if (audioFiles[file.file_id]) {
         const link = document.createElement('a');
         link.href = audioFiles[file.file_id];
-        link.download = `${file.file_name.replace('.pdf', '.wav')}`;
+        link.download = `${file.file_name.replace('.pdf', '.mp3')}`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -210,7 +210,7 @@ export default function Files() {
       // Trigger download
       const link = document.createElement('a');
       link.href = urlData.signedUrl;
-      link.download = `${file.file_name.replace('.pdf', '.wav')}`;
+      link.download = `${file.file_name.replace('.pdf', '.mp3')}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -383,7 +383,7 @@ export default function Files() {
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
-            Download WAV
+            Download MP3
           </button>
           <button
             onClick={() => handleConvert(file)}
