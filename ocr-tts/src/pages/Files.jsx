@@ -7,12 +7,23 @@ export default function Files() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [conversions, setConversions] = useState({}); // file_id -> conversion data
+  const [pollingIntervals, setPollingIntervals] = useState({}); // file_id -> interval ID
+  const [audioFiles, setAudioFiles] = useState({}); // file_id -> signed URL cache
 
   useEffect(() => {
     if (session?.user) {
       fetchFiles();
+      fetchConversions();
     }
   }, [session]);
+
+  // Clean up polling intervals on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(pollingIntervals).forEach(clearInterval);
+    };
+  }, [pollingIntervals]);
 
   const fetchFiles = async () => {
     try {
@@ -38,6 +49,103 @@ export default function Files() {
     }
   };
 
+  const fetchConversions = async () => {
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('file_conversions')
+        .select(`
+          conversion_id,
+          file_id,
+          file_path,
+          job_id,
+          job_completion,
+          status,
+          created_at,
+          updated_at
+        `)
+        .order('created_at', { ascending: false });
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      // Group conversions by file_id, keeping only the most recent
+      const conversionMap = {};
+      data?.forEach(conversion => {
+        if (!conversionMap[conversion.file_id] ||
+            new Date(conversion.created_at) > new Date(conversionMap[conversion.file_id].created_at)) {
+          conversionMap[conversion.file_id] = conversion;
+        }
+      });
+
+      setConversions(conversionMap);
+
+      // Start polling for active conversions
+      Object.values(conversionMap).forEach(conversion => {
+        if (conversion.status === 'pending' || conversion.status === 'running') {
+          startPolling(conversion.file_id);
+        }
+      });
+
+    } catch (err) {
+      console.error('Error fetching conversions:', err);
+      // Don't set error state here as it's not critical for the main functionality
+    }
+  };
+
+  const startPolling = (fileId) => {
+    // Don't start multiple intervals for the same file
+    if (pollingIntervals[fileId]) {
+      return;
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('file_conversions')
+          .select('*')
+          .eq('file_id', fileId)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          const conversion = data[0];
+
+          setConversions(prev => ({
+            ...prev,
+            [fileId]: conversion
+          }));
+
+          // Stop polling if conversion is complete or failed
+          if (conversion.status === 'completed' || conversion.status === 'failed') {
+            stopPolling(fileId);
+          }
+        }
+      } catch (err) {
+        console.error('Error polling conversion status:', err);
+        stopPolling(fileId);
+      }
+    }, 3000); // Poll every 3 seconds
+
+    setPollingIntervals(prev => ({
+      ...prev,
+      [fileId]: intervalId
+    }));
+  };
+
+  const stopPolling = (fileId) => {
+    if (pollingIntervals[fileId]) {
+      clearInterval(pollingIntervals[fileId]);
+      setPollingIntervals(prev => {
+        const newIntervals = { ...prev };
+        delete newIntervals[fileId];
+        return newIntervals;
+      });
+    }
+  };
+
   const handleDownload = async (file) => {
     try {
       const { data, error } = await supabase.storage
@@ -60,6 +168,56 @@ export default function Files() {
     } catch (err) {
       console.error('Download error:', err);
       setError(`Failed to download ${file.file_name}`);
+    }
+  };
+
+  const handleAudioDownload = async (file) => {
+    try {
+      const conversion = conversions[file.file_id];
+      if (!conversion || conversion.status !== 'completed' || !conversion.file_path) {
+        setError('Audio file not available for download');
+        return;
+      }
+
+      // Check if we have a cached URL
+      if (audioFiles[file.file_id]) {
+        const link = document.createElement('a');
+        link.href = audioFiles[file.file_id];
+        link.download = `${file.file_name.replace('.pdf', '.wav')}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      // Generate signed URL for audio file
+      const { data: urlData, error } = await supabase.storage
+        .from('files')
+        .createSignedUrl(conversion.file_path, 3600); // 1 hour expiry
+
+      if (error) throw error;
+
+      if (!urlData?.signedUrl) {
+        throw new Error('Failed to generate download URL');
+      }
+
+      // Cache the URL
+      setAudioFiles(prev => ({
+        ...prev,
+        [file.file_id]: urlData.signedUrl
+      }));
+
+      // Trigger download
+      const link = document.createElement('a');
+      link.href = urlData.signedUrl;
+      link.download = `${file.file_name.replace('.pdf', '.wav')}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+    } catch (err) {
+      console.error('Audio download error:', err);
+      setError(`Failed to download audio file: ${err.message}`);
     }
   };
 
@@ -96,6 +254,27 @@ export default function Files() {
 
       const result = await response.json();
       console.log('Conversion started:', result);
+
+      // Create a pending conversion record locally for immediate UI feedback
+      const pendingConversion = {
+        conversion_id: `pending-${result.id}`,
+        file_id: file.file_id,
+        job_id: result.id,
+        job_completion: 0,
+        status: 'pending',
+        file_path: '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      setConversions(prev => ({
+        ...prev,
+        [file.file_id]: pendingConversion
+      }));
+
+      // Start polling for this conversion
+      startPolling(file.file_id);
+
       setError(`Conversion started! Task ID: ${result.id}`);
 
     } catch (err) {
@@ -155,6 +334,88 @@ export default function Files() {
     });
   };
 
+  const renderConvertColumn = (file) => {
+    const conversion = conversions[file.file_id];
+
+    if (!conversion) {
+      // No conversion - show convert button
+      return (
+        <button
+          onClick={() => handleConvert(file)}
+          className="text-green-600 hover:text-green-900 flex items-center gap-1 px-3 py-1 border border-green-600 rounded hover:bg-green-50 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+          </svg>
+          Convert
+        </button>
+      );
+    }
+
+    if (conversion.status === 'pending' || conversion.status === 'running') {
+      // Active conversion - show progress
+      return (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <div className="w-16 bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${conversion.job_completion}%` }}
+              ></div>
+            </div>
+            <span className="text-xs text-gray-600">{conversion.job_completion}%</span>
+          </div>
+          <span className="text-xs text-blue-600">
+            {conversion.status === 'pending' ? 'Starting...' : 'Converting...'}
+          </span>
+        </div>
+      );
+    }
+
+    if (conversion.status === 'completed') {
+      // Completed - show download link and convert again option
+      return (
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => handleAudioDownload(file)}
+            className="text-blue-600 hover:text-blue-900 flex items-center gap-1 px-2 py-1 text-sm"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Download WAV
+          </button>
+          <button
+            onClick={() => handleConvert(file)}
+            className="text-green-600 hover:text-green-900 text-xs"
+          >
+            Convert Again
+          </button>
+        </div>
+      );
+    }
+
+    if (conversion.status === 'failed') {
+      // Failed - show retry button
+      return (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-red-600">Failed</span>
+          <button
+            onClick={() => handleConvert(file)}
+            className="text-orange-600 hover:text-orange-900 flex items-center gap-1 px-2 py-1 text-sm"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Retry
+          </button>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -168,7 +429,10 @@ export default function Files() {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">My Files</h1>
         <button
-          onClick={fetchFiles}
+          onClick={() => {
+            fetchFiles();
+            fetchConversions();
+          }}
           className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
         >
           Refresh
@@ -240,15 +504,7 @@ export default function Files() {
                       {formatDate(file.uploaded_at)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <button
-                        onClick={() => handleConvert(file)}
-                        className="text-green-600 hover:text-green-900 flex items-center gap-1 px-3 py-1 border border-green-600 rounded hover:bg-green-50 transition-colors"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                        </svg>
-                        Convert
-                      </button>
+                      {renderConvertColumn(file)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
