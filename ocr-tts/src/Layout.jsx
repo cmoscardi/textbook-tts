@@ -12,7 +12,14 @@ export default function Layout() {
   }
 
   if(!session) {
-    return (<Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} />);
+    return (
+      <Auth
+        supabaseClient={supabase}
+        appearance={{ theme: ThemeSupa }}
+        providers={[]}
+        onlyThirdPartyProviders={false}
+      />
+    );
   }
   return (
     <div className="w-full min-h-screen flex flex-col">
