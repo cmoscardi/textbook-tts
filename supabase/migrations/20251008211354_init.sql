@@ -26,6 +26,17 @@ create table "public"."files" (
 
 alter table "public"."files" enable row level security;
 
+create table "public"."user_profiles" (
+    "profile_id" uuid not null default gen_random_uuid(),
+    "user_id" uuid not null,
+    "enabled" boolean not null default true,
+    "created_at" timestamp without time zone not null default now(),
+    "updated_at" timestamp without time zone not null default now()
+);
+
+
+alter table "public"."user_profiles" enable row level security;
+
 CREATE UNIQUE INDEX file_conversions_pkey ON public.file_conversions USING btree (conversion_id);
 
 CREATE UNIQUE INDEX files_pkey ON public.files USING btree (file_id);
@@ -36,9 +47,19 @@ CREATE INDEX idx_file_conversions_job_id ON public.file_conversions USING btree 
 
 CREATE INDEX idx_file_conversions_status ON public.file_conversions USING btree (status);
 
+CREATE INDEX idx_user_profiles_enabled ON public.user_profiles USING btree (enabled);
+
+CREATE INDEX idx_user_profiles_user_id ON public.user_profiles USING btree (user_id);
+
+CREATE UNIQUE INDEX user_profiles_pkey ON public.user_profiles USING btree (profile_id);
+
+CREATE UNIQUE INDEX user_profiles_user_id_key ON public.user_profiles USING btree (user_id);
+
 alter table "public"."file_conversions" add constraint "file_conversions_pkey" PRIMARY KEY using index "file_conversions_pkey";
 
 alter table "public"."files" add constraint "files_pkey" PRIMARY KEY using index "files_pkey";
+
+alter table "public"."user_profiles" add constraint "user_profiles_pkey" PRIMARY KEY using index "user_profiles_pkey";
 
 alter table "public"."file_conversions" add constraint "file_conversions_file_id_fkey" FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE not valid;
 
@@ -52,9 +73,39 @@ alter table "public"."files" add constraint "files_user_id_fkey" FOREIGN KEY (us
 
 alter table "public"."files" validate constraint "files_user_id_fkey";
 
+alter table "public"."user_profiles" add constraint "user_profiles_user_id_fkey" FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE not valid;
+
+alter table "public"."user_profiles" validate constraint "user_profiles_user_id_fkey";
+
+alter table "public"."user_profiles" add constraint "user_profiles_user_id_key" UNIQUE using index "user_profiles_user_id_key";
+
 set check_function_bodies = off;
 
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS $function$
+BEGIN
+    INSERT INTO user_profiles (user_id)
+    VALUES (NEW.id);
+    RETURN NEW;
+END;
+$function$
+;
+
 CREATE OR REPLACE FUNCTION public.update_file_conversions_updated_at()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$function$
+;
+
+CREATE OR REPLACE FUNCTION public.update_user_profiles_updated_at()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -149,6 +200,48 @@ grant truncate on table "public"."files" to "service_role";
 
 grant update on table "public"."files" to "service_role";
 
+grant delete on table "public"."user_profiles" to "anon";
+
+grant insert on table "public"."user_profiles" to "anon";
+
+grant references on table "public"."user_profiles" to "anon";
+
+grant select on table "public"."user_profiles" to "anon";
+
+grant trigger on table "public"."user_profiles" to "anon";
+
+grant truncate on table "public"."user_profiles" to "anon";
+
+grant update on table "public"."user_profiles" to "anon";
+
+grant delete on table "public"."user_profiles" to "authenticated";
+
+grant insert on table "public"."user_profiles" to "authenticated";
+
+grant references on table "public"."user_profiles" to "authenticated";
+
+grant select on table "public"."user_profiles" to "authenticated";
+
+grant trigger on table "public"."user_profiles" to "authenticated";
+
+grant truncate on table "public"."user_profiles" to "authenticated";
+
+grant update on table "public"."user_profiles" to "authenticated";
+
+grant delete on table "public"."user_profiles" to "service_role";
+
+grant insert on table "public"."user_profiles" to "service_role";
+
+grant references on table "public"."user_profiles" to "service_role";
+
+grant select on table "public"."user_profiles" to "service_role";
+
+grant trigger on table "public"."user_profiles" to "service_role";
+
+grant truncate on table "public"."user_profiles" to "service_role";
+
+grant update on table "public"."user_profiles" to "service_role";
+
 create policy "Users can view conversions for their own files."
 on "public"."file_conversions"
 as permissive
@@ -175,6 +268,34 @@ to public
 using ((( SELECT auth.uid() AS uid) = user_id));
 
 
+create policy "Service role can manage all profiles."
+on "public"."user_profiles"
+as permissive
+for all
+to service_role
+using (true)
+with check (true);
+
+
+create policy "Users can update their own profile."
+on "public"."user_profiles"
+as permissive
+for update
+to authenticated
+using ((( SELECT auth.uid() AS uid) = user_id))
+with check ((( SELECT auth.uid() AS uid) = user_id));
+
+
+create policy "Users can view their own profile."
+on "public"."user_profiles"
+as permissive
+for select
+to authenticated
+using ((( SELECT auth.uid() AS uid) = user_id));
+
+
 CREATE TRIGGER trigger_update_file_conversions_updated_at BEFORE UPDATE ON public.file_conversions FOR EACH ROW EXECUTE FUNCTION update_file_conversions_updated_at();
+
+CREATE TRIGGER trigger_update_user_profiles_updated_at BEFORE UPDATE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION update_user_profiles_updated_at();
 
 
