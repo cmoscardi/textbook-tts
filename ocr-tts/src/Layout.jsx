@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Outlet, Link } from "react-router-dom";
 import { Auth } from '@supabase/auth-ui-react'
 import { ThemeSupa } from '@supabase/auth-ui-shared'
@@ -6,8 +7,40 @@ import { useSession } from './lib/SessionContext.jsx';
 
 export default function Layout() {
   const { session, loading } = useSession();
+  const [userEnabled, setUserEnabled] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
 
-  if (loading) {
+  // Fetch user profile when session changes
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      if (session?.user) {
+        try {
+          const { data, error } = await supabase
+            .from('user_profiles')
+            .select('enabled')
+            .eq('user_id', session.user.id)
+            .single();
+
+          if (error) {
+            console.error('Error fetching user profile:', error);
+            setUserEnabled(false);
+          } else {
+            setUserEnabled(data.enabled);
+          }
+        } catch (err) {
+          console.error('Error fetching user profile:', err);
+          setUserEnabled(false); // Fallback to enabled
+        }
+      } else {
+        setUserEnabled(null);
+      }
+      setProfileLoading(false);
+    };
+
+    fetchUserProfile();
+  }, [session]);
+
+  if (loading || profileLoading) {
     return <div>Loading...</div>;
   }
 
@@ -19,6 +52,31 @@ export default function Layout() {
         providers={[]}
         onlyThirdPartyProviders={false}
       />
+    );
+  }
+
+  // Check if user is disabled
+  if (session && userEnabled === false) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+        <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-8 text-center">
+          <div className="mb-6">
+            <svg className="mx-auto h-16 w-16 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.232 18.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">Account Disabled</h1>
+          <p className="text-gray-600 mb-6">
+            Your account has been disabled. Please contact support for assistance.
+          </p>
+          <button
+            onClick={() => supabase.auth.signOut()}
+            className="w-full px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
     );
   }
   return (
