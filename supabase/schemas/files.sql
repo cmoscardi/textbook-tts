@@ -17,10 +17,56 @@ for insert
 to authenticated                -- the Postgres Role (recommended)
 with check (
   (select auth.uid()) = user_id -- the actual Policy
+  AND EXISTS (
+    SELECT 1 FROM user_profiles
+    WHERE user_profiles.user_id = (select auth.uid())
+    AND user_profiles.enabled = true
+  )
 );
 
 
 create policy "Users can see their own files only."
 on files
 for select
-using ( (select auth.uid()) = user_id );
+using (
+  (select auth.uid()) = user_id
+  AND EXISTS (
+    SELECT 1 FROM user_profiles
+    WHERE user_profiles.user_id = (select auth.uid())
+    AND user_profiles.enabled = true
+  )
+);
+
+create policy "Users can update their own files."
+on files
+for update
+to authenticated
+using (
+  (select auth.uid()) = user_id
+  AND EXISTS (
+    SELECT 1 FROM user_profiles
+    WHERE user_profiles.user_id = (select auth.uid())
+    AND user_profiles.enabled = true
+  )
+)
+with check (
+  (select auth.uid()) = user_id
+  AND EXISTS (
+    SELECT 1 FROM user_profiles
+    WHERE user_profiles.user_id = (select auth.uid())
+    AND user_profiles.enabled = true
+  )
+);
+
+create policy "Users can delete their own files."
+on files
+for delete
+to authenticated
+using (
+  (select auth.uid()) = user_id
+  AND EXISTS (
+    SELECT 1 FROM user_profiles
+    WHERE user_profiles.user_id = (select auth.uid())
+    AND user_profiles.enabled = true
+  )
+);

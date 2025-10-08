@@ -11,4 +11,4 @@ sleep 10
 $SCRIPT_DIR/../supabase-db-push.sh
 
 # Execute the init.sql file in the database container
-docker compose exec db psql -U postgres -d postgres -f /custom-init/file_upload_policy.sql
+docker compose exec db psql -U postgres -d postgres -f $SCRIPT_DIR/../supabase/schemas/file_upload_policy.sql

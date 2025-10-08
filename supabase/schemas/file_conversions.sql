@@ -12,7 +12,7 @@ CREATE TABLE file_conversions (
 -- Enable row level security
 ALTER TABLE file_conversions ENABLE ROW LEVEL SECURITY;
 
--- Policy: Users can view conversions for their own files
+-- Policy: Users can view conversions for their own files (if enabled)
 CREATE POLICY "Users can view conversions for their own files."
 ON file_conversions
 FOR SELECT
@@ -22,6 +22,11 @@ USING (
         SELECT 1 FROM files
         WHERE files.file_id = file_conversions.file_id
         AND files.user_id = (SELECT auth.uid())
+    )
+    AND EXISTS (
+        SELECT 1 FROM user_profiles
+        WHERE user_profiles.user_id = (SELECT auth.uid())
+        AND user_profiles.enabled = true
     )
 );
 
