@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from collections import namedtuple
 from io import BytesIO
 from chatterbox.tts import ChatterboxTTS
 from celery import Celery
@@ -45,6 +46,9 @@ import torch
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
+
+# Named tuple for file information
+FileInfo = namedtuple('FileInfo', ['signed_url', 'file_name', 'user_id'])
 
 
 # Database helper functions
@@ -107,28 +111,40 @@ def finalize_conversion(conversion_id: str, output_file_path: str, status: str =
         return False
 
 
-def get_file_info(file_url: str):
-    """Extract file_id from file URL and get file info"""
+def get_file_info(file_id: str):
+    """Get file info and generate signed URL from file_id
+
+    Returns:
+        FileInfo: Named tuple with signed_url, file_name, and user_id, or None if failed
+    """
     if not supabase:
-        return None, None
+        return None
 
     try:
-        # Extract file path from signed URL - this is a simplified approach
-        # In practice, you might need to parse the URL more carefully
-        if "files/" in file_url:
-            # Extract the file path after 'files/'
-            file_path = file_url.split("files/")[1].split("?")[0]
+        # Query the files table to get file metadata
+        result = supabase.table("files").select("file_id, file_name, file_path, user_id").eq("file_id", file_id).execute()
+        if not result.data:
+            logger.error(f"No file found with file_id: {file_id}")
+            return None
 
-            # Query the files table to get file_id
-            result = supabase.table("files").select("file_id, file_name").eq("file_path", file_path).execute()
-            if result.data:
-                return result.data[0]["file_id"], result.data[0]["file_name"]
+        file_data = result.data[0]
+        file_name = file_data["file_name"]
+        file_path = file_data["file_path"]
+        user_id = file_data["user_id"]
 
-        logger.warning(f"Could not extract file info from URL: {file_url}")
-        return None, None
+        # Generate signed URL for the file (1 hour expiry)
+        signed_url_result = supabase.storage.from_("files").create_signed_url(file_path, 3600)
+        if not signed_url_result:
+            logger.error(f"Failed to create signed URL for file_path: {file_path}")
+            return None
+
+        signed_url = signed_url_result.get("signedURL")
+        logger.info(f"Generated signed URL for file_id: {file_id}")
+        return FileInfo(signed_url=signed_url, file_name=file_name, user_id=user_id)
+
     except Exception as e:
         logger.error(f"Failed to get file info: {e}")
-        return None, None
+        return None
 
 
 # Storage helper functions
@@ -159,19 +175,19 @@ def generate_output_file_path(user_id: str, original_filename: str) -> str:
 
 
 @app.task()
-def convert_file(file_url):
-    logger.info(f"Starting convert_file task for URL: {file_url}")
+def convert_file(file_id):
+    logger.info(f"Starting convert_file task for file_id: {file_id}")
 
     # Get the current task ID
     task_id = convert_file.request.id
     conversion_id = None
 
     try:
-        # Extract file information from URL
-        file_id, original_filename = get_file_info(file_url)
-        if not file_id:
-            logger.error("Could not extract file information from URL")
-            return {"error": "Invalid file URL"}
+        # Get file information and signed URL
+        file_info = get_file_info(file_id)
+        if not file_info:
+            logger.error(f"Could not get file information for file_id: {file_id}")
+            return {"error": "Invalid file_id or file not found"}
 
         # Create conversion record in database
         conversion_id = create_conversion_record(file_id, task_id)
@@ -190,23 +206,17 @@ def convert_file(file_url):
 
         start = time.time()
 
-        # Handle file URLs and HTTP URLs differently
-        if file_url.startswith("file://"):
-            # Remove file:// prefix and load directly from file path
-            file_path = file_url[7:-1]  # Remove "file://" prefix and trailing /
-            logger.info(f"Loading file from path: {file_path}")
-        else:
-            # For HTTP URLs, download the file first
-            logger.info(f"Downloading file from URL: {file_url}")
-            response = requests.get(file_url)
-            response.raise_for_status()
+        # Download the file from the signed URL
+        logger.info(f"Downloading file from signed URL")
+        response = requests.get(file_info.signed_url)
+        response.raise_for_status()
 
-            # Save to temporary file
-            temp_file = f"/tmp/download_{task_id}.pdf"
-            with open(temp_file, "wb") as f:
-                f.write(response.content)
-            file_path = temp_file
-            logger.info(f"Downloaded file to: {file_path}")
+        # Save to temporary file
+        temp_file = f"/tmp/download_{task_id}.pdf"
+        with open(temp_file, "wb") as f:
+            f.write(response.content)
+        file_path = temp_file
+        logger.info(f"Downloaded file to: {file_path}")
 
         update_conversion_progress(conversion_id, 20)
 
@@ -282,10 +292,8 @@ def convert_file(file_url):
         with open(temp_mp3_file, "rb") as audio_file:
             audio_data = audio_file.read()
 
-        # Generate output file path
-        # Extract user_id from the file path (assuming format: user_id/filename)
-        user_id = file_id.split('/')[0] if '/' in str(file_id) else 'unknown'
-        output_file_path = generate_output_file_path(user_id, original_filename or "converted_audio")
+        # Generate output file path using the file info we retrieved earlier
+        output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
 
         uploaded_path = upload_audio_file(output_file_path, audio_data)
         if uploaded_path:

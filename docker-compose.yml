@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     networks:
-      - ttsnet
+      - supabase_network_textbook-tts
     volumes:
       - ./ocr-tts:/app
       - /app/node_modules
@@ -34,7 +34,7 @@ services:
     env_file:
       - .env.development
     networks:
-      - ttsnet
+      - supabase_network_textbook-tts
 
   rabbitmq:
     container_name: rabbitmq
@@ -44,7 +44,7 @@ services:
     env_file:
       - .env.development
     networks:
-      - ttsnet
+      - supabase_network_textbook-tts
 
   localstack:
     image: gresau/localstack-persist:4
@@ -58,9 +58,10 @@ services:
     volumes:
       - './localstack:/persisted-data'
     networks:
-      - ttsnet
+      - supabase_network_textbook-tts
 
 
 networks:
-  ttsnet:
+  supabase_network_textbook-tts:
     external: true
+    name: supabase_network_textbook-tts

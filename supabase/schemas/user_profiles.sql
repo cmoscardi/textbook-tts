@@ -1,7 +1,7 @@
 CREATE TABLE user_profiles (
     profile_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    enabled      BOOLEAN NOT NULL DEFAULT true,
+    enabled      BOOLEAN NOT NULL DEFAULT false,
     created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE(user_id)

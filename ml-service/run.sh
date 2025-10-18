@@ -12,7 +12,7 @@ cd $SCRIPT_DIR
 
 export PGPASSWORD=$POSTGRES_PASSWORD
 # Check if the database exists
-DB_EXISTS=$(psql -U "$POSTGRES_USER" -h "$POSTGRES_HOST" -p "5432" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$CELERY_DB';")
+DB_EXISTS=$(psql -U "$POSTGRES_USER" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$CELERY_DB';")
 
 if [ "$DB_EXISTS" == "1" ]; then
     echo "Database '$CELERY_DB' already exists"

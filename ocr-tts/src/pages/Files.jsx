@@ -225,41 +225,29 @@ export default function Files() {
     try {
       setError('');
 
-      // Get the public URL for the file
-      const { data: urlData } = await supabase.storage
-        .from('files')
-        .createSignedUrl(file.file_path, 3600); // 1 hour expiry
-
-      if (!urlData?.signedUrl) {
-        throw new Error('Failed to generate file URL');
-      }
-
-      // Get ML service URL from environment
-      const mlServiceHost = import.meta.env.VITE_MLSERVICE_HOST || 'http://localhost:8001';
-
-      // Send POST request to ML service
-      const response = await fetch(`${mlServiceHost}/ocr`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          pdf_url: urlData.signedUrl
-        }),
+      // Call Supabase Edge Function for file conversion
+      const { data, error } = await supabase.functions.invoke('convert-file', {
+        body: {
+          file_id: file.file_id,
+          file_path: file.file_path
+        }
       });
 
-      if (!response.ok) {
-        throw new Error(`ML service error: ${response.statusText}`);
+      if (error) {
+        throw new Error(`Conversion service error: ${error.message}`);
       }
 
-      const result = await response.json();
-      console.log('Conversion started:', result);
+      if (!data?.id) {
+        throw new Error('Invalid response from conversion service');
+      }
+
+      console.log('Conversion started:', data);
 
       // Create a pending conversion record locally for immediate UI feedback
       const pendingConversion = {
-        conversion_id: `pending-${result.id}`,
+        conversion_id: `pending-${data.id}`,
         file_id: file.file_id,
-        job_id: result.id,
+        job_id: data.id,
         job_completion: 0,
         status: 'pending',
         file_path: '',
@@ -275,7 +263,7 @@ export default function Files() {
       // Start polling for this conversion
       startPolling(file.file_id);
 
-      setError(`Conversion started! Task ID: ${result.id}`);
+      setError(`Conversion started! Task ID: ${data.id}`);
 
     } catch (err) {
       console.error('Convert error:', err);

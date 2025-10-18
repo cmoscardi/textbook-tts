@@ -29,7 +29,7 @@ alter table "public"."files" enable row level security;
 create table "public"."user_profiles" (
     "profile_id" uuid not null default gen_random_uuid(),
     "user_id" uuid not null,
-    "enabled" boolean not null default true,
+    "enabled" boolean not null default false,
     "created_at" timestamp without time zone not null default now(),
     "updated_at" timestamp without time zone not null default now()
 );
@@ -87,7 +87,7 @@ CREATE OR REPLACE FUNCTION public.handle_new_user()
  SECURITY DEFINER
 AS $function$
 BEGIN
-    INSERT INTO user_profiles (user_id)
+    INSERT INTO public.user_profiles (user_id)
     VALUES (NEW.id);
     RETURN NEW;
 END;
@@ -247,9 +247,11 @@ on "public"."file_conversions"
 as permissive
 for select
 to authenticated
-using ((EXISTS ( SELECT 1
+using (((EXISTS ( SELECT 1
    FROM files
-  WHERE ((files.file_id = file_conversions.file_id) AND (files.user_id = ( SELECT auth.uid() AS uid))))));
+  WHERE ((files.file_id = file_conversions.file_id) AND (files.user_id = ( SELECT auth.uid() AS uid))))) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))));
 
 
 create policy "Users can create files."
@@ -257,7 +259,19 @@ on "public"."files"
 as permissive
 for insert
 to authenticated
-with check ((( SELECT auth.uid() AS uid) = user_id));
+with check (((( SELECT auth.uid() AS uid) = user_id) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))));
+
+
+create policy "Users can delete their own files."
+on "public"."files"
+as permissive
+for delete
+to authenticated
+using (((( SELECT auth.uid() AS uid) = user_id) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))));
 
 
 create policy "Users can see their own files only."
@@ -265,7 +279,22 @@ on "public"."files"
 as permissive
 for select
 to public
-using ((( SELECT auth.uid() AS uid) = user_id));
+using (((( SELECT auth.uid() AS uid) = user_id) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))));
+
+
+create policy "Users can update their own files."
+on "public"."files"
+as permissive
+for update
+to authenticated
+using (((( SELECT auth.uid() AS uid) = user_id) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))))
+with check (((( SELECT auth.uid() AS uid) = user_id) AND (EXISTS ( SELECT 1
+   FROM user_profiles
+  WHERE ((user_profiles.user_id = ( SELECT auth.uid() AS uid)) AND (user_profiles.enabled = true))))));
 
 
 create policy "Service role can manage all profiles."
@@ -297,5 +326,7 @@ using ((( SELECT auth.uid() AS uid) = user_id));
 CREATE TRIGGER trigger_update_file_conversions_updated_at BEFORE UPDATE ON public.file_conversions FOR EACH ROW EXECUTE FUNCTION update_file_conversions_updated_at();
 
 CREATE TRIGGER trigger_update_user_profiles_updated_at BEFORE UPDATE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION update_user_profiles_updated_at();
+
+CREATE TRIGGER trigger_handle_new_user AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 
 
