@@ -88,12 +88,26 @@ serve(async (req) => {
     // Call the ML service with just the file_id
     // The ML service will handle fetching file metadata and generating signed URLs
     const mlServiceHost = Deno.env.get('MLSERVICE_HOST') ?? 'http://localhost:5000'
+    const mlServiceAuthKey = Deno.env.get('MLSERVICE_AUTH_KEY')
+
+    if (!mlServiceAuthKey) {
+      console.error('MLSERVICE_AUTH_KEY not configured')
+      return new Response(
+        JSON.stringify({ error: 'ML service configuration error' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
     console.log("ML Service Host:", mlServiceHost);
 
     const mlResponse = await fetch(`${mlServiceHost}/ocr`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ML-Auth-Key': mlServiceAuthKey,
       },
       body: JSON.stringify({
         file_id: file_id

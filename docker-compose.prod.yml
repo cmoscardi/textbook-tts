@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.prod
+    container_name: ml-service-prod
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # Persistent cache for models (read-only in production)
+      - ./hf-cache:/root/.cache/huggingface
+      - ./dl-cache:/root/.cache/datalab
+    working_dir: /app
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env.production
+    networks:
+      - ml_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq-prod
+    restart: unless-stopped
+    ports:
+      - "5672:5672"      # AMQP port (consider not exposing publicly)
+      - "15672:15672"    # Management UI (use reverse proxy with auth)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-admin}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-changeme}
+    networks:
+      - ml_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+
+networks:
+  ml_network:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
+    driver: local
