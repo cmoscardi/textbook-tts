@@ -148,19 +148,59 @@ def get_file_info(file_id: str):
 
 
 # Storage helper functions
-def upload_audio_file(file_path: str, file_data: bytes, content_type: str = "audio/mpeg"):
-    """Upload audio file to Supabase storage"""
+def upload_audio_file(file_path: str, file_data: bytes, user_id: str, content_type: str = "audio/mpeg"):
+    """Upload audio file to Supabase storage with correct owner"""
     if not supabase:
         logger.warning("Supabase not available - skipping file upload")
         return None
 
     try:
-        result = supabase.storage.from_("files").upload(
-            path=file_path,
-            file=file_data,
-            file_options={"content-type": content_type}
-        )
-        logger.info(f"Uploaded audio file: {file_path}")
+        # Upload the audio file
+        logger.info(f"Uploading audio file: {file_path} for user: {user_id}")
+        
+        try:
+            result = supabase.storage.from_("files").upload(
+                path=file_path,
+                file=file_data,
+                file_options={
+                    "content-type": content_type
+                }
+            )
+        except Exception as upload_error:
+            # If file already exists, try to update it instead
+            if "already exists" in str(upload_error).lower():
+                logger.info(f"File already exists, updating: {file_path}")
+                result = supabase.storage.from_("files").update(
+                    path=file_path,
+                    file=file_data,
+                    file_options={
+                        "content-type": content_type
+                    }
+                )
+            else:
+                raise upload_error
+        
+        # Since we're using service role, we need to manually set the owner_id
+        # by updating the storage.objects table directly
+        logger.info(f"Setting owner_id for uploaded file: {file_path} to user: {user_id}")
+        
+        # Update the owner_id in the storage.objects table using raw SQL
+        try:
+            update_result = supabase.rpc("update_storage_owner", {
+                "file_path": file_path,
+                "bucket_name": "files", 
+                "new_owner_id": user_id
+            }).execute()
+            
+            if update_result.data:
+                logger.info(f"Successfully updated owner_id for file: {file_path}")
+            else:
+                logger.warning(f"Could not update owner_id for file: {file_path}")
+        except Exception as owner_error:
+            logger.error(f"Failed to update owner_id for file {file_path}: {owner_error}")
+            # Continue anyway - the file was uploaded successfully
+        
+        logger.info(f"Uploaded audio file: {file_path} with owner: {user_id}")
         return file_path
     except Exception as e:
         logger.error(f"Failed to upload audio file: {e}")
@@ -295,7 +335,7 @@ def convert_file(file_id):
         # Generate output file path using the file info we retrieved earlier
         output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
 
-        uploaded_path = upload_audio_file(output_file_path, audio_data)
+        uploaded_path = upload_audio_file(output_file_path, audio_data, file_info.user_id)
         if uploaded_path:
             # Finalize the conversion record
             finalize_conversion(conversion_id, uploaded_path, "completed")

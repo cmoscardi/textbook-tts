@@ -28,4 +28,4 @@ echo "and were moving along to run jupyterlab?"
 jupyter lab --ip=0.0.0.0 --allow-root --ServerApp.password='argon2:$argon2id$v=19$m=10240,t=10,p=8$X7+Dr0XggW22erD5JuwdJA$8JKWkBqLP9jIHCbsrq9HVkkS2qyVOx08OltS9Cq2dus' &
 
 # Start main worker for non-OCR tasks
-watchmedo auto-restart --directory=$SCRIPT_DIR --pattern='*.py' -- celery -A ml_worker worker -c 1  --loglevel=info
+watchmedo auto-restart --directory=$SCRIPT_DIR --pattern='*.py' -- celery -A ml_worker worker -c 1 --pool=solo  --loglevel=info

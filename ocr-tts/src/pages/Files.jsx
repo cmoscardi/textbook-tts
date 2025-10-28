@@ -179,45 +179,102 @@ export default function Files() {
         return;
       }
 
-      // Check if we have a cached URL
-      if (audioFiles[file.file_id]) {
+      console.log('Attempting to download audio file:');
+      console.log('- File ID:', file.file_id);
+      console.log('- File name:', file.file_name);
+      console.log('- Conversion file path:', conversion.file_path);
+      console.log('- Conversion status:', conversion.status);
+
+      // First, check if the file exists in storage
+      console.log('Checking if file exists in storage...');
+      const { data: listData, error: listError } = await supabase.storage
+        .from('files')
+        .list(conversion.file_path.substring(0, conversion.file_path.lastIndexOf('/')), {
+          limit: 1000,
+          search: conversion.file_path.substring(conversion.file_path.lastIndexOf('/') + 1)
+        });
+
+      if (listError) {
+        console.error('Error listing files:', listError);
+      } else {
+        console.log('Files found in directory:', listData);
+        const fileExists = listData && listData.some(f => f.name === conversion.file_path.substring(conversion.file_path.lastIndexOf('/') + 1));
+        console.log('File exists in storage:', fileExists);
+      }
+
+      // Try direct download first (like PDF downloads)
+      console.log('Attempting direct download method...');
+      const { data: downloadData, error: downloadError } = await supabase.storage
+        .from('files')
+        .download(conversion.file_path);
+
+      if (downloadError) {
+        console.error('Direct download failed, trying signed URL method...');
+        console.error('Download error details:', downloadError);
+        
+        // Fallback to signed URL method
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('files')
+          .createSignedUrl(conversion.file_path, 3600); // 1 hour expiry
+
+        if (urlError) {
+          console.error('Signed URL method also failed:', urlError);
+          throw urlError;
+        }
+
+        if (!urlData?.signedUrl) {
+          console.error('No signed URL returned from Supabase');
+          throw new Error('Failed to generate download URL');
+        }
+
+        console.log('Successfully generated signed URL:', urlData.signedUrl);
+
+        // Use signed URL for download
         const link = document.createElement('a');
-        link.href = audioFiles[file.file_id];
+        link.href = urlData.signedUrl;
         link.download = `${file.file_name.replace('.pdf', '.mp3')}`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        return;
+      } else {
+        // Direct download succeeded
+        console.log('Direct download successful, creating blob URL...');
+        
+        // Create download link using blob data (same as PDF download)
+        const url = URL.createObjectURL(downloadData);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${file.file_name.replace('.pdf', '.mp3')}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        console.log('Download completed successfully');
       }
-
-      // Generate signed URL for audio file
-      const { data: urlData, error } = await supabase.storage
-        .from('files')
-        .createSignedUrl(conversion.file_path, 3600); // 1 hour expiry
-
-      if (error) throw error;
-
-      if (!urlData?.signedUrl) {
-        throw new Error('Failed to generate download URL');
-      }
-
-      // Cache the URL
-      setAudioFiles(prev => ({
-        ...prev,
-        [file.file_id]: urlData.signedUrl
-      }));
-
-      // Trigger download
-      const link = document.createElement('a');
-      link.href = urlData.signedUrl;
-      link.download = `${file.file_name.replace('.pdf', '.mp3')}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
 
     } catch (err) {
       console.error('Audio download error:', err);
-      setError(`Failed to download audio file: ${err.message}`);
+      console.error('Error details:', {
+        message: err.message,
+        code: err.code,
+        statusCode: err.statusCode,
+        details: err.details
+      });
+      
+      // Provide more specific error messages
+      let errorMessage = 'Failed to download audio file';
+      if (err.message?.includes('Object not found')) {
+        errorMessage = `Audio file not found in storage. Path: ${conversions[file.file_id]?.file_path || 'unknown'}`;
+      } else if (err.message?.includes('Permission denied')) {
+        errorMessage = 'Permission denied - you may not have access to this audio file';
+      } else if (err.message?.includes('Failed to generate download URL')) {
+        errorMessage = 'Could not generate download link for audio file';
+      } else {
+        errorMessage = `Failed to download audio file: ${err.message}`;
+      }
+      
+      setError(errorMessage);
     }
   };
 
