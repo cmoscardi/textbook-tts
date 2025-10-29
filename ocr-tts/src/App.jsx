@@ -10,9 +10,6 @@ function App() {
     <>
       <h1>Textbook TTS</h1>
       <h2>A simple way to turn your textbooks into audio</h2>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
     </>
   )
 }
