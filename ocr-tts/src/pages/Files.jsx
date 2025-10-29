@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 
+// Map to track active polling jobs outside of React state
+const activePollingJobs = new Map();
+
 export default function Files() {
   const { session } = useSession();
   const [files, setFiles] = useState([]);
@@ -21,9 +24,16 @@ export default function Files() {
   // Clean up polling intervals on unmount
   useEffect(() => {
     return () => {
-      Object.values(pollingIntervals).forEach(clearInterval);
+      // Only run cleanup on actual unmount
+      console.log('Component unmounting, cleaning up polling intervals');
+      activePollingJobs.forEach((_, jobId) => {
+        activePollingJobs.set(jobId, false);
+      });
+      Object.values(pollingIntervals).forEach(intervalId => {
+        clearInterval(intervalId);
+      });
     };
-  }, [pollingIntervals]);
+  }, []); // Empty dependency array - only run on mount/unmount
 
   const fetchFiles = async () => {
     try {
@@ -83,7 +93,7 @@ export default function Files() {
       // Start polling for active conversions
       Object.values(conversionMap).forEach(conversion => {
         if (conversion.status === 'pending' || conversion.status === 'running') {
-          startPolling(conversion.file_id);
+          startPolling(conversion.job_id, conversion.file_id);
         }
       });
 
@@ -93,56 +103,102 @@ export default function Files() {
     }
   };
 
-  const startPolling = (fileId) => {
-    // Don't start multiple intervals for the same file
-    if (pollingIntervals[fileId]) {
+  const startPolling = (jobId, fileId) => {
+    // Don't start multiple intervals for the same job
+    if (activePollingJobs.has(jobId)) {
+      console.log('Polling already exists for job_id:', jobId);
       return;
     }
+    
+    console.log('Starting polling for job_id:', jobId, 'file_id:', fileId);
+    console.log('Current active jobs:', Array.from(activePollingJobs.keys()));
 
+    // Mark job as active
+    activePollingJobs.set(jobId, true);
+    console.log('Marked job as active:', jobId, 'Map size:', activePollingJobs.size);
+    
     const intervalId = setInterval(async () => {
+      const isActive = activePollingJobs.get(jobId);
+      console.log('Polling execution check for job_id:', jobId, 'isActive:', isActive);
+      if (!isActive) {
+        console.log('Polling marked inactive for job_id:', jobId, 'stopping execution');
+        clearInterval(intervalId);
+        activePollingJobs.delete(jobId);
+        return;
+      }
+      
       try {
         const { data, error } = await supabase
           .from('file_conversions')
           .select('*')
-          .eq('file_id', fileId)
-          .order('created_at', { ascending: false })
+          .eq('job_id', jobId)
           .limit(1);
 
         if (error) throw error;
 
         if (data && data.length > 0) {
           const conversion = data[0];
+          console.log('Polling update for job_id:', jobId, 'status:', conversion.status, 'progress:', conversion.job_completion);
 
-          setConversions(prev => ({
-            ...prev,
-            [fileId]: conversion
-          }));
+          // Check if we need to stop polling before updating state
+          const shouldStop = conversion.status === 'completed' || conversion.status === 'failed';
+          
+          setConversions(prev => {
+            // For active conversions, update the file's conversion
+            // For completed/failed, keep them in state for downloads
+            const newState = { ...prev };
+            newState[fileId] = conversion;
+            return newState;
+          });
 
-          // Stop polling if conversion is complete or failed
-          if (conversion.status === 'completed' || conversion.status === 'failed') {
-            stopPolling(fileId);
+          // Stop polling after state update if conversion is done
+          if (shouldStop) {
+            console.log('Conversion finished for job_id:', jobId, 'final status:', conversion.status);
+            activePollingJobs.set(jobId, false); // Mark as inactive to stop future executions
+            clearInterval(intervalId);
+            setPollingIntervals(prev => {
+              const newIntervals = { ...prev };
+              delete newIntervals[jobId];
+              return newIntervals;
+            });
           }
+        } else {
+          console.log('No data found for job_id:', jobId);
         }
       } catch (err) {
         console.error('Error polling conversion status:', err);
-        stopPolling(fileId);
+        activePollingJobs.set(jobId, false);
+        clearInterval(intervalId);
+        setPollingIntervals(prev => {
+          const newIntervals = { ...prev };
+          delete newIntervals[jobId];
+          return newIntervals;
+        });
       }
     }, 3000); // Poll every 3 seconds
 
-    setPollingIntervals(prev => ({
-      ...prev,
-      [fileId]: intervalId
-    }));
+    setPollingIntervals(prev => {
+      const newState = {
+        ...prev,
+        [jobId]: intervalId
+      };
+      console.log('Updated polling intervals state:', Object.keys(newState));
+      return newState;
+    });
   };
 
-  const stopPolling = (fileId) => {
-    if (pollingIntervals[fileId]) {
-      clearInterval(pollingIntervals[fileId]);
+  const stopPolling = (jobId) => {
+    console.log('Stopping polling for job_id:', jobId);
+    activePollingJobs.set(jobId, false); // Mark as inactive first
+    if (pollingIntervals[jobId]) {
+      clearInterval(pollingIntervals[jobId]);
       setPollingIntervals(prev => {
         const newIntervals = { ...prev };
-        delete newIntervals[fileId];
+        delete newIntervals[jobId];
         return newIntervals;
       });
+    } else {
+      console.log('No polling interval found for job_id:', jobId);
     }
   };
 
@@ -282,6 +338,14 @@ export default function Files() {
     try {
       setError('');
 
+      // Check if there's already an active conversion for this file
+      const existingConversion = conversions[file.file_id];
+      if (existingConversion && 
+          (existingConversion.status === 'pending' || existingConversion.status === 'running')) {
+        setError('Conversion already in progress for this file');
+        return;
+      }
+
       // Call Supabase Edge Function for file conversion
       const { data, error } = await supabase.functions.invoke('convert-file', {
         body: {
@@ -299,6 +363,7 @@ export default function Files() {
       }
 
       console.log('Conversion started:', data);
+      console.log('Starting polling for job_id:', data.id, 'file_id:', file.file_id);
 
       // Create a pending conversion record locally for immediate UI feedback
       const pendingConversion = {
@@ -312,13 +377,15 @@ export default function Files() {
         updated_at: new Date().toISOString()
       };
 
+      // Update state - this will overwrite any completed conversion, which is fine for "Convert Again"
       setConversions(prev => ({
         ...prev,
         [file.file_id]: pendingConversion
       }));
 
-      // Start polling for this conversion
-      startPolling(file.file_id);
+      // Start polling for this conversion immediately
+      console.log('About to start polling for job_id:', data.id);
+      startPolling(data.id, file.file_id);
 
       setError(`Conversion started! Task ID: ${data.id}`);
 
