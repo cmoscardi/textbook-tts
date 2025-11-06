@@ -405,6 +405,7 @@ For issues or questions:
 
 
 ## Manual supabase stuff
+0. After starting ML service backend, Enable RLS on the tables that Celery auto-creates
 1. Prod URL and redirect URLs in auth settings of supabase dashboard
 2. Email templates
 ```
