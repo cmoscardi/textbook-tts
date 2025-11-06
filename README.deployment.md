@@ -406,3 +406,8 @@ For issues or questions:
 
 ## Manual supabase stuff
 1. Prod URL and redirect URLs in auth settings of supabase dashboard
+2. Email templates
+```
+-- Reset password
+{{ .ConfirmationURL }}&redirect_to={{ .SiteURL }}/reset-password
+```
