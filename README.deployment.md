@@ -10,6 +10,7 @@ This guide covers deploying the ML Service and RabbitMQ to a self-hosted server.
 - [Monitoring](#monitoring)
 - [Troubleshooting](#troubleshooting)
 - [Security Recommendations](#security-recommendations)
+- [Manual supabase stuff](#manual-supabase-stuff)
 
 ## Prerequisites
 
@@ -402,4 +403,6 @@ For issues or questions:
 
 ---
 
-**Last Updated**: 2024
+
+## Manual supabase stuff
+1. Prod URL and redirect URLs in auth settings of supabase dashboard

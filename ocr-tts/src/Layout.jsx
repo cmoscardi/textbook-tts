@@ -51,6 +51,7 @@ export default function Layout() {
         appearance={{ theme: ThemeSupa }}
         providers={[]}
         onlyThirdPartyProviders={false}
+        redirectTo={`${window.location.origin}/reset-password`}
       />
     );
   }

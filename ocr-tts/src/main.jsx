@@ -6,6 +6,7 @@ import App from './App.jsx'
 import About from './pages/About.jsx'
 import Upload from './pages/Upload.jsx'
 import Files from './pages/Files.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import Layout from "./Layout.jsx";
 import { SessionProvider } from './lib/SessionContext.jsx';
 
@@ -19,6 +20,10 @@ const router = createBrowserRouter([
       { path: "upload", element: <Upload /> },
       { path: "files", element: <Files /> },
     ]
+  },
+  {
+    path: "/reset-password",
+    element: <ResetPassword />
   },
 ]);
 
