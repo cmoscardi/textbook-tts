@@ -35,7 +35,8 @@ echo "Starting Celery worker..."
 celery -A ml_worker worker \
     -c 1 \
     --loglevel=info \
-    --max-tasks-per-child=1 &
+    --max-tasks-per-child=1 \
+    --pool=solo &
 
 CELERY_PID=$!
 
