@@ -111,6 +111,100 @@ def finalize_conversion(conversion_id: str, output_file_path: str, status: str =
         return False
 
 
+# Parsing helper functions
+def create_parsing_record(file_id: str, job_id: str):
+    """Create a new file parsing record in the database"""
+    if not supabase:
+        logger.warning("Supabase not available - skipping database operation")
+        return None
+
+    try:
+        data = {
+            "file_id": file_id,
+            "job_id": job_id,
+            "job_completion": 0,
+            "status": "pending"
+        }
+        result = supabase.table("file_parsings").insert(data).execute()
+        logger.info(f"Created parsing record with ID: {result.data[0]['parsing_id']}")
+        return result.data[0]['parsing_id']
+    except Exception as e:
+        logger.error(f"Failed to create parsing record: {e}")
+        return None
+
+
+def update_parsing_progress(parsing_id: str, progress: int, status: str = None):
+    """Update the progress and status of a parsing job"""
+    if not supabase or not parsing_id:
+        return False
+
+    try:
+        update_data = {"job_completion": progress}
+        if status:
+            update_data["status"] = status
+
+        supabase.table("file_parsings").update(update_data).eq("parsing_id", parsing_id).execute()
+        logger.info(f"Updated parsing {parsing_id}: progress={progress}, status={status}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update parsing progress: {e}")
+        return False
+
+
+def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed"):
+    """Finalize a parsing job and update the files table with parsed text"""
+    if not supabase or not parsing_id:
+        return False
+
+    try:
+        # Update parsing record
+        parsing_update = {
+            "job_completion": 100,
+            "status": status
+        }
+        supabase.table("file_parsings").update(parsing_update).eq("parsing_id", parsing_id).execute()
+
+        # Update files table with parsed text
+        if status == "completed" and parsed_text:
+            files_update = {
+                "parsed_text": parsed_text,
+                "parsed_at": "NOW()"
+            }
+            supabase.table("files").update(files_update).eq("file_id", file_id).execute()
+            logger.info(f"Finalized parsing {parsing_id} and updated file {file_id} with parsed text")
+        else:
+            logger.info(f"Finalized parsing {parsing_id} with status {status}")
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to finalize parsing: {e}")
+        return False
+
+
+def get_parsed_text(file_id: str):
+    """Get parsed text for a file
+
+    Returns:
+        str: Parsed text, or None if not available
+    """
+    if not supabase:
+        logger.warning("Supabase not available - skipping database operation")
+        return None
+
+    try:
+        result = supabase.table("files").select("parsed_text, parsed_at").eq("file_id", file_id).single().execute()
+
+        if result.data and result.data.get('parsed_text'):
+            logger.info(f"Retrieved parsed text for file {file_id}")
+            return result.data['parsed_text']
+        else:
+            logger.warning(f"No parsed text found for file {file_id}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get parsed text: {e}")
+        return None
+
+
 def get_file_info(file_id: str):
     """Get file info and generate signed URL from file_id
 
@@ -383,6 +477,300 @@ def convert_file(file_id):
                 torch.cuda.empty_cache()
         except:
             pass
+
+        raise e
+
+
+@app.task()
+def parse_pdf_task(file_id):
+    """Parse PDF and extract text, saving to database"""
+    logger.info(f"Starting parse_pdf_task for file_id: {file_id}")
+
+    # Get the current task ID
+    task_id = parse_pdf_task.request.id
+    parsing_id = None
+    temp_file = None
+
+    try:
+        # Get file information and signed URL
+        file_info = get_file_info(file_id)
+        if not file_info:
+            logger.error(f"Could not get file information for file_id: {file_id}")
+            return {"error": "Invalid file_id or file not found"}
+
+        # Create parsing record in database
+        parsing_id = create_parsing_record(file_id, task_id)
+        if not parsing_id:
+            logger.warning("Could not create parsing record - continuing without database tracking")
+
+        # Check if CUDA devices are available
+        if not torch.cuda.is_available():
+            logger.warning("No CUDA device available - returning dev mode message")
+            if parsing_id:
+                finalize_parsing(parsing_id, file_id, "dev mode text", "completed")
+            return "no cuda device -- dev mode"
+
+        logger.info("CUDA device available, proceeding with parsing")
+        update_parsing_progress(parsing_id, 10, "running")
+
+        start = time.time()
+
+        # Download the file from the signed URL
+        logger.info(f"Downloading PDF from signed URL")
+        response = requests.get(file_info.signed_url)
+        response.raise_for_status()
+
+        # Save to temporary file
+        temp_file = f"/tmp/download_{task_id}.pdf"
+        with open(temp_file, "wb") as f:
+            f.write(response.content)
+        logger.info(f"Downloaded PDF to: {temp_file}")
+
+        update_parsing_progress(parsing_id, 20)
+
+        # Perform PDF parsing with marker-pdf
+        logger.info("Initializing PDF converter and creating model dictionary")
+        converter = PdfConverter(
+            artifact_dict=create_model_dict(),
+        )
+        update_parsing_progress(parsing_id, 30)
+
+        logger.info("Starting PDF conversion")
+        res = converter(temp_file)
+        text, _, images = text_from_rendered(res)
+        logger.info(f"PDF conversion complete, extracted {len(text)} characters")
+
+        # Cleanup converter resources
+        del converter
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info("Cleaned up PDF converter resources")
+        update_parsing_progress(parsing_id, 60)
+
+        # Text preprocessing - split into sentences
+        import re
+        sentences = re.split(r'(?<=[.!?]) +', text)
+        logger.info(f"Split text into {len(sentences)} sentences")
+
+        # Save the parsed text
+        parsed_text = text
+        update_parsing_progress(parsing_id, 80)
+
+        # Save to database
+        logger.info(f"Saving parsed text to database ({len(parsed_text)} characters)")
+        finalize_parsing(parsing_id, file_id, parsed_text, "completed")
+        update_parsing_progress(parsing_id, 100)
+
+        # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            os.remove(temp_file)
+            logger.info(f"Cleaned up temporary file: {temp_file}")
+
+        end = time.time()
+        processing_time = end - start
+        logger.info(f"Parsing completed in {processing_time:.2f} seconds")
+
+        return {
+            "status": "completed",
+            "parsing_id": parsing_id,
+            "text_length": len(parsed_text),
+            "sentence_count": len(sentences),
+            "processing_time": processing_time
+        }
+
+    except Exception as e:
+        logger.error(f"Error in parse_pdf_task: {str(e)}")
+        if parsing_id:
+            try:
+                # Update parsing record with error
+                update_data = {
+                    "status": "failed",
+                    "job_completion": 0,
+                    "error_message": str(e)
+                }
+                supabase.table("file_parsings").update(update_data).eq("parsing_id", parsing_id).execute()
+            except:
+                pass
+
+        # Cleanup on error
+        try:
+            if 'converter' in locals():
+                del converter
+                gc.collect()
+                torch.cuda.empty_cache()
+        except:
+            pass
+
+        # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+
+        raise e
+
+
+@app.task()
+def convert_to_audio_task(file_id):
+    """Convert parsed text to audio using TTS"""
+    logger.info(f"Starting convert_to_audio_task for file_id: {file_id}")
+
+    # Get the current task ID
+    task_id = convert_to_audio_task.request.id
+    conversion_id = None
+    temp_wav_file = None
+    temp_mp3_file = None
+
+    try:
+        # Get file information for user_id and file_name
+        file_info = get_file_info(file_id)
+        if not file_info:
+            logger.error(f"Could not get file information for file_id: {file_id}")
+            return {"error": "Invalid file_id or file not found"}
+
+        # Get parsed text from database
+        parsed_text = get_parsed_text(file_id)
+        if not parsed_text:
+            logger.error(f"No parsed text found for file_id: {file_id}. Run /parse first.")
+            return {"error": "No parsed text found. Please parse the PDF first."}
+
+        logger.info(f"Retrieved parsed text ({len(parsed_text)} characters)")
+
+        # Create conversion record in database
+        conversion_id = create_conversion_record(file_id, task_id)
+        if not conversion_id:
+            logger.warning("Could not create conversion record - continuing without database tracking")
+
+        # Check if CUDA devices are available
+        if not torch.cuda.is_available():
+            logger.warning("No CUDA device available - returning dev mode message")
+            if conversion_id:
+                finalize_conversion(conversion_id, "test.mp3", "completed")
+            return "no cuda device -- dev mode"
+
+        logger.info("CUDA device available, proceeding with TTS conversion")
+        update_conversion_progress(conversion_id, 10, "running")
+
+        start = time.time()
+
+        # Split text into sentences for TTS processing
+        import re
+        sentences = re.split(r'(?<=[.!?]) +', parsed_text)
+        logger.info(f"Split text into {len(sentences)} sentences for TTS processing")
+        update_conversion_progress(conversion_id, 20)
+
+        # Initialize TTS model
+        wavs = []
+        logger.info("Loading ChatterboxTTS model on CUDA")
+        tts_model = ChatterboxTTS.from_pretrained(device="cuda")
+        update_conversion_progress(conversion_id, 30)
+
+        # Generate audio for each sentence
+        logger.info("Starting TTS generation for all sentences")
+        for i, sentence in enumerate(sentences):
+            if i % 10 == 0:  # Log progress every 10 sentences
+                logger.info(f"Processing sentence {i+1}/{len(sentences)}")
+                # Update progress from 30% to 70% during TTS processing
+                progress = 30 + int((i / len(sentences)) * 40)
+                update_conversion_progress(conversion_id, progress)
+            wavs.append(tts_model.generate(sentence))
+
+        logger.info("Combining audio segments")
+        combined_audio = torch.cat(wavs, dim=1)
+        update_conversion_progress(conversion_id, 75)
+
+        # Save to temporary WAV file first
+        temp_wav_file = f"/tmp/audio_{task_id}.wav"
+        logger.info(f"Saving combined audio to {temp_wav_file}")
+        ta.save(temp_wav_file, combined_audio, tts_model.sr)
+
+        # Convert WAV to MP3
+        temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
+        logger.info(f"Converting WAV to MP3: {temp_mp3_file}")
+        audio_segment = AudioSegment.from_wav(temp_wav_file)
+        audio_segment.export(temp_mp3_file, format="mp3", bitrate="192k")
+
+        update_conversion_progress(conversion_id, 85)
+
+        # Upload MP3 file to Supabase storage
+        logger.info("Uploading MP3 file to Supabase storage")
+        with open(temp_mp3_file, "rb") as audio_file:
+            audio_data = audio_file.read()
+
+        # Generate output file path
+        output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
+
+        uploaded_path = upload_audio_file(output_file_path, audio_data, file_info.user_id)
+        if uploaded_path:
+            # Finalize the conversion record
+            finalize_conversion(conversion_id, uploaded_path, "completed")
+            logger.info(f"Audio file uploaded successfully: {uploaded_path}")
+        else:
+            logger.error("Failed to upload audio file")
+            finalize_conversion(conversion_id, "", "failed")
+
+        update_conversion_progress(conversion_id, 95)
+
+        # Cleanup
+        logger.info("Cleaning up TTS model resources")
+        del tts_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Clean up temporary files
+        if temp_wav_file and os.path.exists(temp_wav_file):
+            os.remove(temp_wav_file)
+        if temp_mp3_file and os.path.exists(temp_mp3_file):
+            os.remove(temp_mp3_file)
+
+        update_conversion_progress(conversion_id, 100)
+
+        end = time.time()
+        processing_time = end - start
+        logger.info(f"Audio conversion completed in {processing_time:.2f} seconds")
+
+        return {
+            "status": "completed",
+            "conversion_id": conversion_id,
+            "output_file_path": uploaded_path,
+            "processing_time": processing_time
+        }
+
+    except Exception as e:
+        logger.error(f"Error in convert_to_audio_task: {str(e)}")
+        if conversion_id:
+            try:
+                # Update conversion record with error
+                update_data = {
+                    "status": "failed",
+                    "job_completion": 0,
+                    "error_message": str(e)
+                }
+                supabase.table("file_conversions").update(update_data).eq("conversion_id", conversion_id).execute()
+            except:
+                pass
+
+        # Cleanup on error
+        try:
+            if 'tts_model' in locals():
+                del tts_model
+                gc.collect()
+                torch.cuda.empty_cache()
+        except:
+            pass
+
+        # Clean up temporary files
+        if temp_wav_file and os.path.exists(temp_wav_file):
+            try:
+                os.remove(temp_wav_file)
+            except:
+                pass
+        if temp_mp3_file and os.path.exists(temp_mp3_file):
+            try:
+                os.remove(temp_mp3_file)
+            except:
+                pass
 
         raise e
 

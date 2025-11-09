@@ -11,6 +11,7 @@ export default function Files() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [conversions, setConversions] = useState({}); // file_id -> conversion data
+  const [parsings, setParsings] = useState({}); // file_id -> parsing data
   const [pollingIntervals, setPollingIntervals] = useState({}); // file_id -> interval ID
   const [audioFiles, setAudioFiles] = useState({}); // file_id -> signed URL cache
 
@@ -18,6 +19,7 @@ export default function Files() {
     if (session?.user) {
       fetchFiles();
       fetchConversions();
+      fetchParsings();
     }
   }, [session]);
 
@@ -99,6 +101,43 @@ export default function Files() {
 
     } catch (err) {
       console.error('Error fetching conversions:', err);
+      // Don't set error state here as it's not critical for the main functionality
+    }
+  };
+
+  const fetchParsings = async () => {
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('file_parsings')
+        .select(`
+          parsing_id,
+          file_id,
+          job_id,
+          job_completion,
+          status,
+          error_message,
+          created_at,
+          updated_at
+        `)
+        .order('created_at', { ascending: false });
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      // Group parsings by file_id, keeping only the most recent
+      const parsingMap = {};
+      data?.forEach(parsing => {
+        if (!parsingMap[parsing.file_id] ||
+            new Date(parsing.created_at) > new Date(parsingMap[parsing.file_id].created_at)) {
+          parsingMap[parsing.file_id] = parsing;
+        }
+      });
+
+      setParsings(parsingMap);
+
+    } catch (err) {
+      console.error('Error fetching parsings:', err);
       // Don't set error state here as it's not critical for the main functionality
     }
   };
@@ -448,7 +487,48 @@ export default function Files() {
 
   const renderConvertColumn = (file) => {
     const conversion = conversions[file.file_id];
+    const parsing = parsings[file.file_id];
 
+    // Check parsing status first
+    if (!file.parsed_text) {
+      // File hasn't been parsed yet
+      if (parsing) {
+        if (parsing.status === 'pending' || parsing.status === 'running') {
+          // Parsing in progress
+          return (
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <div className="w-16 bg-gray-200 rounded-full h-2">
+                  <div
+                    className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${parsing.job_completion}%` }}
+                  ></div>
+                </div>
+                <span className="text-xs text-gray-600">{parsing.job_completion}%</span>
+              </div>
+              <span className="text-xs text-yellow-600">Parsing PDF...</span>
+            </div>
+          );
+        } else if (parsing.status === 'failed') {
+          // Parsing failed
+          return (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-red-600">Parse Failed</span>
+              <span className="text-xs text-gray-500">Re-upload file</span>
+            </div>
+          );
+        }
+      }
+      // No parsing record yet - file needs to be uploaded again with new system
+      return (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-gray-500">Not parsed</span>
+          <span className="text-xs text-gray-400">Re-upload file</span>
+        </div>
+      );
+    }
+
+    // File is parsed, check conversion status
     if (!conversion) {
       // No conversion - show convert button
       return (

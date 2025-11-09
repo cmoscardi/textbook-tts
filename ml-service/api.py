@@ -8,7 +8,7 @@ import os
 from typing import Annotated
 
 from ml_worker import app as celery_app
-from ml_worker import convert_file
+from ml_worker import convert_file, parse_pdf_task, convert_to_audio_task
 
 # Configure logging
 logging.basicConfig(
@@ -85,6 +85,13 @@ class OCRRequest(BaseModel):
     file_id: UUID = Field(description="The UUID of the file in the database")
 
 
+class ParseRequest(BaseModel):
+    file_id: UUID = Field(description="The UUID of the file in the database")
+
+
+class ConvertRequest(BaseModel):
+    file_id: UUID = Field(description="The UUID of the file in the database")
+
 
 @app.post("/ocr")
 def ocr(request: OCRRequest, auth: RequireAuth):
@@ -108,4 +115,57 @@ def ocr(request: OCRRequest, auth: RequireAuth):
         return {"id": fut.id}
     except Exception as e:
         logger.error(f"Error creating OCR task for file_id {request.file_id}: {str(e)}")
+        raise
+
+
+@app.post("/parse")
+def parse(request: ParseRequest, auth: RequireAuth):
+    """
+    Parse PDF endpoint that extracts text from a PDF and saves to database.
+    This is step 1 of the split workflow (parse → convert).
+
+    Requires authentication via ML-Auth-Key header.
+
+    Args:
+        request (ParseRequest): Request body containing file_id (UUID)
+        auth (RequireAuth): Authentication dependency (automatically validated)
+
+    Returns:
+        dict: Task ID for the parsing job
+    """
+    logger.info(f"Received parse request for file_id: {request.file_id}")
+
+    try:
+        fut = parse_pdf_task.delay(str(request.file_id))
+        logger.info(f"Created parsing task with ID: {fut.id} for file_id: {request.file_id}")
+        return {"id": fut.id, "task_type": "parse"}
+    except Exception as e:
+        logger.error(f"Error creating parse task for file_id {request.file_id}: {str(e)}")
+        raise
+
+
+@app.post("/convert")
+def convert(request: ConvertRequest, auth: RequireAuth):
+    """
+    Convert to audio endpoint that generates TTS audio from parsed text.
+    This is step 2 of the split workflow (parse → convert).
+    Requires that /parse has been called first on this file.
+
+    Requires authentication via ML-Auth-Key header.
+
+    Args:
+        request (ConvertRequest): Request body containing file_id (UUID)
+        auth (RequireAuth): Authentication dependency (automatically validated)
+
+    Returns:
+        dict: Task ID for the conversion job
+    """
+    logger.info(f"Received convert request for file_id: {request.file_id}")
+
+    try:
+        fut = convert_to_audio_task.delay(str(request.file_id))
+        logger.info(f"Created conversion task with ID: {fut.id} for file_id: {request.file_id}")
+        return {"id": fut.id, "task_type": "convert"}
+    except Exception as e:
+        logger.error(f"Error creating convert task for file_id {request.file_id}: {str(e)}")
         raise
