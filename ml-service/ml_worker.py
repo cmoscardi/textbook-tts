@@ -393,6 +393,7 @@ def convert_file(file_id):
 
         wavs = []
         logger.info("Loading ChatterboxTTS model on CUDA")
+        logger.info(f"GPU memory allocated before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         tts_model = ChatterboxTTS.from_pretrained(device="cuda")
         update_conversion_progress(conversion_id, 70)
 
@@ -403,15 +404,27 @@ def convert_file(file_id):
                 # Update progress from 70% to 90% during TTS processing
                 progress = 70 + int((i / len(sentences)) * 20)
                 update_conversion_progress(conversion_id, progress)
-            wavs.append(tts_model.generate(sentence))
+                # Clear CUDA cache periodically to prevent memory buildup
+                torch.cuda.empty_cache()
+
+            # Move generated audio to CPU immediately to free GPU memory
+            wav = tts_model.generate(sentence)
+            wavs.append(wav.cpu())
 
         logger.info("Combining audio segments")
-        combined_audio = torch.cat(wavs, dim=1)
+        combined_audio = torch.cat(wavs, dim=1)  # Already on CPU
+
+        # Explicitly delete the list to free memory
+        del wavs
+        gc.collect()
+
+        # Save sample rate before cleaning up model
+        sample_rate = tts_model.sr
 
         # Save to temporary WAV file first
         temp_wav_file = f"/tmp/audio_{task_id}.wav"
         logger.info(f"Saving combined audio to {temp_wav_file}")
-        ta.save(temp_wav_file, combined_audio, tts_model.sr)
+        ta.save(temp_wav_file, combined_audio, sample_rate)
 
         # Convert WAV to MP3
         temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
@@ -440,9 +453,22 @@ def convert_file(file_id):
 
         # Cleanup
         logger.info("Cleaning up TTS model resources")
+
+        # Move model to CPU before deletion to ensure GPU memory is released
+        try:
+            tts_model.cpu()
+            if hasattr(tts_model, 'clear_cache'):
+                tts_model.clear_cache()
+        except Exception as e:
+            logger.warning(f"Error moving model to CPU: {e}")
+
         del tts_model
+        del combined_audio
+
         gc.collect()
         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()  # Call twice to help with fragmentation
+        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         # Clean up temporary files
         if os.path.exists(temp_wav_file):
@@ -472,11 +498,28 @@ def convert_file(file_id):
         # Cleanup on error
         try:
             if 'tts_model' in locals():
+                # Move model to CPU before deletion to ensure GPU memory is released
+                try:
+                    tts_model.cpu()
+                    if hasattr(tts_model, 'clear_cache'):
+                        tts_model.clear_cache()
+                except Exception as cleanup_err:
+                    logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
+
                 del tts_model
-                gc.collect()
-                torch.cuda.empty_cache()
-        except:
-            pass
+
+            # Clean up any other GPU tensors
+            if 'combined_audio' in locals():
+                del combined_audio
+            if 'wavs' in locals():
+                del wavs
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # Call twice for fragmentation
+            logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        except Exception as cleanup_err:
+            logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
         raise e
 
@@ -663,7 +706,9 @@ def convert_to_audio_task(file_id):
         # Initialize TTS model
         wavs = []
         logger.info("Loading ChatterboxTTS model on CUDA")
+        logger.info(f"GPU memory before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         tts_model = ChatterboxTTS.from_pretrained(device="cuda")
+        logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         update_conversion_progress(conversion_id, 30)
 
         # Generate audio for each sentence
@@ -674,16 +719,27 @@ def convert_to_audio_task(file_id):
                 # Update progress from 30% to 70% during TTS processing
                 progress = 30 + int((i / len(sentences)) * 40)
                 update_conversion_progress(conversion_id, progress)
-            wavs.append(tts_model.generate(sentence))
+            # Move generated audio to CPU immediately to free GPU memory
+            wav = tts_model.generate(sentence)
+            wavs.append(wav.cpu())
+
+            # Clear CUDA cache periodically during generation
+            if i % 10 == 0:
+                torch.cuda.empty_cache()
 
         logger.info("Combining audio segments")
-        combined_audio = torch.cat(wavs, dim=1)
+        combined_audio = torch.cat(wavs, dim=1)  # Already on CPU
+        del wavs  # Explicitly delete the list
+        gc.collect()
         update_conversion_progress(conversion_id, 75)
+
+        # Save sample rate before cleanup
+        sample_rate = tts_model.sr
 
         # Save to temporary WAV file first
         temp_wav_file = f"/tmp/audio_{task_id}.wav"
         logger.info(f"Saving combined audio to {temp_wav_file}")
-        ta.save(temp_wav_file, combined_audio, tts_model.sr)
+        ta.save(temp_wav_file, combined_audio, sample_rate)
 
         # Convert WAV to MP3
         temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
@@ -712,11 +768,24 @@ def convert_to_audio_task(file_id):
 
         update_conversion_progress(conversion_id, 95)
 
-        # Cleanup
+        # Cleanup - move model to CPU before deletion
         logger.info("Cleaning up TTS model resources")
+        try:
+            # Move model to CPU to release GPU memory
+            tts_model.cpu()
+            # Clear any model-specific caches if available
+            if hasattr(tts_model, 'clear_cache'):
+                tts_model.clear_cache()
+        except Exception as e:
+            logger.warning(f"Error moving model to CPU: {e}")
+
         del tts_model
+        del combined_audio
         gc.collect()
         torch.cuda.empty_cache()
+        # Clear CUDA cache twice (helps with fragmented memory)
+        torch.cuda.empty_cache()
+        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         # Clean up temporary files
         if temp_wav_file and os.path.exists(temp_wav_file):
@@ -754,11 +823,28 @@ def convert_to_audio_task(file_id):
         # Cleanup on error
         try:
             if 'tts_model' in locals():
+                # Move model to CPU before deletion to ensure GPU memory is released
+                try:
+                    tts_model.cpu()
+                    if hasattr(tts_model, 'clear_cache'):
+                        tts_model.clear_cache()
+                except Exception as cleanup_err:
+                    logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
+
                 del tts_model
-                gc.collect()
-                torch.cuda.empty_cache()
-        except:
-            pass
+
+            # Clean up any other GPU tensors
+            if 'combined_audio' in locals():
+                del combined_audio
+            if 'wavs' in locals():
+                del wavs
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # Call twice for fragmentation
+            logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        except Exception as cleanup_err:
+            logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
         # Clean up temporary files
         if temp_wav_file and os.path.exists(temp_wav_file):
