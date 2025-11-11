@@ -427,8 +427,6 @@ export default function Files() {
       console.log('About to start polling for job_id:', data.id);
       startPolling(data.id, file.file_id);
 
-      setError(`Conversion started! Task ID: ${data.id}`);
-
     } catch (err) {
       console.error('Convert error:', err);
       setError(`Failed to start conversion: ${err.message}`);
