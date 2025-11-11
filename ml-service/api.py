@@ -8,7 +8,7 @@ import os
 from typing import Annotated
 
 from ml_worker import app as celery_app
-from ml_worker import convert_file, parse_pdf_task, convert_to_audio_task
+from ml_worker import parse_pdf_task, convert_to_audio_task
 
 # Configure logging
 logging.basicConfig(
@@ -93,29 +93,6 @@ class ConvertRequest(BaseModel):
     file_id: UUID = Field(description="The UUID of the file in the database")
 
 
-@app.post("/ocr")
-def ocr(request: OCRRequest, auth: RequireAuth):
-    """
-    OCR endpoint that processes a PDF using docTR.
-
-    Requires authentication via ML-Auth-Key header.
-
-    Args:
-        request (OCRRequest): Request body containing file_id (UUID)
-        auth (RequireAuth): Authentication dependency (automatically validated)
-
-    Returns:
-        dict: Task ID for the OCR job
-    """
-    logger.info(f"Received OCR request for file_id: {request.file_id}")
-
-    try:
-        fut = convert_file.delay(str(request.file_id))
-        logger.info(f"Created Celery task with ID: {fut.id} for file_id: {request.file_id}")
-        return {"id": fut.id}
-    except Exception as e:
-        logger.error(f"Error creating OCR task for file_id {request.file_id}: {str(e)}")
-        raise
 
 
 @app.post("/parse")
