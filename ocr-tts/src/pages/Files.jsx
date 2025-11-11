@@ -564,7 +564,7 @@ export default function Files() {
     }
 
     if (conversion.status === 'completed') {
-      // Completed - show download link and convert again option
+      // Completed - show download link
       return (
         <div className="flex flex-col gap-1">
           <button
@@ -575,12 +575,6 @@ export default function Files() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
             Download MP3
-          </button>
-          <button
-            onClick={() => handleConvert(file)}
-            className="text-green-600 hover:text-green-900 text-xs"
-          >
-            Convert Again
           </button>
         </div>
       );
