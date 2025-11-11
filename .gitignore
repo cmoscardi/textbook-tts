@@ -40,3 +40,4 @@ ml-service/*.jpg
 __pycache__
 localstack
 supabase/.branches
+.env.production
