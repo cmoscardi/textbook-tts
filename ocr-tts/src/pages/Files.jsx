@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 
@@ -11,6 +12,7 @@ export default function Files() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [conversions, setConversions] = useState({}); // file_id -> conversion data
+  const [parsings, setParsings] = useState({}); // file_id -> parsing data
   const [pollingIntervals, setPollingIntervals] = useState({}); // file_id -> interval ID
   const [audioFiles, setAudioFiles] = useState({}); // file_id -> signed URL cache
 
@@ -18,6 +20,7 @@ export default function Files() {
     if (session?.user) {
       fetchFiles();
       fetchConversions();
+      fetchParsings();
     }
   }, [session]);
 
@@ -99,6 +102,43 @@ export default function Files() {
 
     } catch (err) {
       console.error('Error fetching conversions:', err);
+      // Don't set error state here as it's not critical for the main functionality
+    }
+  };
+
+  const fetchParsings = async () => {
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('file_parsings')
+        .select(`
+          parsing_id,
+          file_id,
+          job_id,
+          job_completion,
+          status,
+          error_message,
+          created_at,
+          updated_at
+        `)
+        .order('created_at', { ascending: false });
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      // Group parsings by file_id, keeping only the most recent
+      const parsingMap = {};
+      data?.forEach(parsing => {
+        if (!parsingMap[parsing.file_id] ||
+            new Date(parsing.created_at) > new Date(parsingMap[parsing.file_id].created_at)) {
+          parsingMap[parsing.file_id] = parsing;
+        }
+      });
+
+      setParsings(parsingMap);
+
+    } catch (err) {
+      console.error('Error fetching parsings:', err);
       // Don't set error state here as it's not critical for the main functionality
     }
   };
@@ -448,7 +488,48 @@ export default function Files() {
 
   const renderConvertColumn = (file) => {
     const conversion = conversions[file.file_id];
+    const parsing = parsings[file.file_id];
 
+    // Check parsing status first
+    if (!file.parsed_text) {
+      // File hasn't been parsed yet
+      if (parsing) {
+        if (parsing.status === 'pending' || parsing.status === 'running') {
+          // Parsing in progress
+          return (
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <div className="w-16 bg-gray-200 rounded-full h-2">
+                  <div
+                    className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${parsing.job_completion}%` }}
+                  ></div>
+                </div>
+                <span className="text-xs text-gray-600">{parsing.job_completion}%</span>
+              </div>
+              <span className="text-xs text-yellow-600">Parsing PDF...</span>
+            </div>
+          );
+        } else if (parsing.status === 'failed') {
+          // Parsing failed
+          return (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-red-600">Parse Failed</span>
+              <span className="text-xs text-gray-500">Re-upload file</span>
+            </div>
+          );
+        }
+      }
+      // No parsing record yet - file needs to be uploaded again with new system
+      return (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-gray-500">Not parsed</span>
+          <span className="text-xs text-gray-400">Re-upload file</span>
+        </div>
+      );
+    }
+
+    // File is parsed, check conversion status
     if (!conversion) {
       // No conversion - show convert button
       return (
@@ -537,15 +618,15 @@ export default function Files() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-800">My Files</h1>
         <button
           onClick={() => {
             fetchFiles();
             fetchConversions();
           }}
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors w-full sm:w-auto"
         >
           Refresh
         </button>
@@ -566,86 +647,171 @@ export default function Files() {
           <p className="text-gray-500">Get started by uploading your first file.</p>
         </div>
       ) : (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Size
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Uploaded
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Convert
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {files.map((file) => (
-                  <tr key={file.file_id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <svg className="h-5 w-5 text-gray-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        <div>
-                          <div className="text-sm font-medium text-gray-900">
-                            {file.file_name}
+        <>
+          {/* Mobile Card View */}
+          <div className="block lg:hidden space-y-4">
+            {files.map((file) => (
+              <div key={file.file_id} className="bg-white shadow rounded-lg p-4">
+                {/* File name with icon */}
+                <div className="flex items-start mb-3">
+                  <svg className="h-5 w-5 text-gray-400 mr-2 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-medium text-gray-900 break-words">{file.file_name}</h3>
+                  </div>
+                </div>
+
+                {/* File metadata */}
+                <div className="grid grid-cols-2 gap-2 mb-3 text-xs text-gray-600">
+                  <div>
+                    <span className="font-medium">Size:</span> {formatFileSize(file.file_size)}
+                  </div>
+                  <div>
+                    <span className="font-medium">Type:</span> {file.mime_type || 'Unknown'}
+                  </div>
+                  <div className="col-span-2">
+                    <span className="font-medium">Uploaded:</span> {formatDate(file.uploaded_at)}
+                  </div>
+                </div>
+
+                {/* Convert status */}
+                <div className="mb-3 pb-3 border-b border-gray-200">
+                  <div className="text-xs font-medium text-gray-500 mb-1">Conversion Status</div>
+                  {renderConvertColumn(file)}
+                </div>
+
+                {/* Actions */}
+                <div className="flex flex-wrap gap-2">
+                  {file.parsed_text && (
+                    <Link
+                      to={`/view/${file.file_id}`}
+                      className="flex-1 min-w-[100px] text-center px-3 py-2 text-sm text-purple-600 bg-purple-50 hover:bg-purple-100 rounded flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                      View
+                    </Link>
+                  )}
+                  <button
+                    onClick={() => handleDownload(file)}
+                    className="flex-1 min-w-[100px] px-3 py-2 text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 rounded flex items-center justify-center gap-1 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Download
+                  </button>
+                  <button
+                    onClick={() => handleDelete(file)}
+                    className="flex-1 min-w-[100px] px-3 py-2 text-sm text-red-600 bg-red-50 hover:bg-red-100 rounded flex items-center justify-center gap-1 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden lg:block bg-white shadow rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Name
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Size
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Type
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Uploaded
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Convert
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {files.map((file) => (
+                    <tr key={file.file_id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <svg className="h-5 w-5 text-gray-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">
+                              {file.file_name}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatFileSize(file.file_size)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {file.mime_type || 'Unknown'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(file.uploaded_at)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      {renderConvertColumn(file)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => handleDownload(file)}
-                          className="text-blue-600 hover:text-blue-900 flex items-center gap-1"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          Download
-                        </button>
-                        <button
-                          onClick={() => handleDelete(file)}
-                          className="text-red-600 hover:text-red-900 flex items-center gap-1"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {formatFileSize(file.file_size)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {file.mime_type || 'Unknown'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {formatDate(file.uploaded_at)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        {renderConvertColumn(file)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <div className="flex space-x-2">
+                          {file.parsed_text && (
+                            <Link
+                              to={`/view/${file.file_id}`}
+                              className="text-purple-600 hover:text-purple-900 flex items-center gap-1"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                              View
+                            </Link>
+                          )}
+                          <button
+                            onClick={() => handleDownload(file)}
+                            className="text-blue-600 hover:text-blue-900 flex items-center gap-1"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Download
+                          </button>
+                          <button
+                            onClick={() => handleDelete(file)}
+                            className="text-red-600 hover:text-red-900 flex items-center gap-1"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

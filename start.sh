@@ -20,4 +20,20 @@ fi
 
 sleep 5
 
-docker compose up -d
+docker compose up $1 -d
+NETWORK_ID=$(docker network ls --filter name=supabase_network_textbook-tts --format "{{.ID}}")
+supabase functions serve --env-file .env.development --network-id $NETWORK_ID &
+
+# Wait for edge runtime container to be created
+echo "Waiting for edge runtime container to start..."
+sleep 3
+
+# Connect edge runtime to the Supabase network so Kong can reach it
+echo "Connecting edge runtime to Supabase network..."
+docker network connect supabase_network_textbook-tts supabase_edge_runtime_textbook-tts 2>/dev/null || echo "Edge runtime already connected or not yet ready"
+
+echo "Services started successfully!"
+echo "Edge Functions available at: http://localhost:54321/functions/v1/"
+
+# Keep script running (since supabase functions serve is in background)
+wait

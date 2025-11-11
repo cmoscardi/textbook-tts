@@ -103,7 +103,7 @@ serve(async (req) => {
 
     console.log("ML Service Host:", mlServiceHost);
 
-    const mlResponse = await fetch(`${mlServiceHost}/convert`, {
+    const mlResponse = await fetch(`${mlServiceHost}/parse`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -118,7 +118,7 @@ serve(async (req) => {
       const errorText = await mlResponse.text()
       console.error('ML service error:', errorText)
       return new Response(
-        JSON.stringify({ error: 'Failed to start audio conversion' }),
+        JSON.stringify({ error: 'Failed to start parsing' }),
         {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
