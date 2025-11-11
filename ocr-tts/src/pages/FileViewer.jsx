@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,8 +10,11 @@ export default function FileViewer() {
   const { session } = useSession();
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
+  const [conversion, setConversion] = useState(null);
+  const [audioUrl, setAudioUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const audioRef = useRef(null);
 
   useEffect(() => {
     if (session?.user && fileId) {
@@ -46,6 +49,30 @@ export default function FileViewer() {
       }
 
       setFile(data);
+
+      // Fetch conversion data (optional - for audio player)
+      const { data: conversionData, error: conversionError } = await supabase
+        .from('file_conversions')
+        .select('*')
+        .eq('file_id', fileId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      // Only set conversion and audio if conversion exists and is completed
+      if (!conversionError && conversionData && conversionData.status === 'completed' && conversionData.file_path) {
+        setConversion(conversionData);
+
+        // Generate signed URL for audio file
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('files')
+          .createSignedUrl(conversionData.file_path, 3600); // 1 hour expiry
+
+        if (!urlError && urlData?.signedUrl) {
+          setAudioUrl(urlData.signedUrl);
+        }
+      }
+
     } catch (err) {
       console.error('Error fetching file:', err);
       setError('Failed to load file');
@@ -88,6 +115,30 @@ export default function FileViewer() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadAudio = async () => {
+    if (!conversion?.file_path) return;
+
+    try {
+      const { data, error } = await supabase.storage
+        .from('files')
+        .download(conversion.file_path);
+
+      if (error) throw error;
+
+      const url = URL.createObjectURL(data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${file.file_name.replace('.pdf', '')}.mp3`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Download error:', err);
+      alert('Failed to download audio file');
+    }
   };
 
   if (loading) {
@@ -158,6 +209,14 @@ export default function FileViewer() {
                     <span>Parsed: {formatDate(file.parsed_at)}</span>
                   </div>
                 )}
+                {conversion && (
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    </svg>
+                    <span>Converted: {formatDate(conversion.created_at)}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -187,6 +246,44 @@ export default function FileViewer() {
           </div>
         </div>
       </div>
+
+      {/* Audio Player - only show if conversion is completed */}
+      {audioUrl && conversion && (
+        <div className="mb-6 bg-white shadow rounded-lg p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-12 h-12 bg-green-100 rounded-full">
+                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-800">Audio Player</h2>
+                <p className="text-sm text-gray-600">Listen to your converted audiobook</p>
+              </div>
+            </div>
+            <button
+              onClick={handleDownloadAudio}
+              className="px-3 py-2 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition-colors flex items-center gap-2"
+              title="Download audio file"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Download MP3
+            </button>
+          </div>
+          <audio
+            ref={audioRef}
+            controls
+            className="w-full"
+            preload="metadata"
+          >
+            <source src={audioUrl} type="audio/mpeg" />
+            Your browser does not support the audio element.
+          </audio>
+        </div>
+      )}
 
       {/* Markdown content */}
       <div className="bg-white shadow rounded-lg p-8">
