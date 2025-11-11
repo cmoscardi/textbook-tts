@@ -9,6 +9,7 @@ export default function Layout() {
   const { session, loading } = useSession();
   const [userEnabled, setUserEnabled] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Fetch user profile when session changes
   useEffect(() => {
@@ -82,24 +83,56 @@ export default function Layout() {
   }
   return (
     <div className="w-full min-h-screen flex flex-col">
+      {/* Mobile Header with Hamburger */}
+      <div className="md:hidden bg-gray-800 text-white px-4 py-3 flex items-center justify-between sticky top-0 z-40">
+        <h1 className="text-lg font-semibold">Textbook TTS</h1>
+        <button
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          className="p-2 rounded hover:bg-gray-700 transition-colors"
+          aria-label="Toggle menu"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            {mobileMenuOpen ? (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            ) : (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            )}
+          </svg>
+        </button>
+      </div>
+
+      {/* Backdrop overlay for mobile menu */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
 
       {/* Main container with sidebar and content */}
-      <div className="flex flex-1">
-        {/* Vertical Toolbar */}
-        <div className="bg-gray-200 border-r border-gray-300 w-48 p-3 flex flex-col justify-between">
+      <div className="flex flex-1 relative">
+        {/* Vertical Sidebar */}
+        <div className={`
+          bg-gray-200 border-r border-gray-300 w-48 p-3 flex flex-col justify-between
+          fixed md:static inset-y-0 left-0 z-50 transform transition-transform duration-300 ease-in-out
+          ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          md:mt-0 mt-[52px]
+        `}>
           <div className="flex flex-col gap-3">
-            <Link 
-              to="/upload" 
+            <Link
+              to="/upload"
               className="flex items-center gap-2 px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+              onClick={() => setMobileMenuOpen(false)}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               Upload Files
             </Link>
-            <Link 
-              to="/files" 
+            <Link
+              to="/files"
               className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
+              onClick={() => setMobileMenuOpen(false)}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -107,9 +140,12 @@ export default function Layout() {
               Show Files
             </Link>
           </div>
-          
-          <button 
-            onClick={() => supabase.auth.signOut()}
+
+          <button
+            onClick={() => {
+              supabase.auth.signOut();
+              setMobileMenuOpen(false);
+            }}
             className="flex items-center gap-2 px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,8 +156,8 @@ export default function Layout() {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 bg-gray-100">
-          <div className="w-full p-6">
+        <main className="flex-1 bg-gray-100 w-full">
+          <div className="w-full p-4 md:p-6">
             <Outlet />
           </div>
         </main>
