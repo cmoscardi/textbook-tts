@@ -33,6 +33,9 @@ hf-cache/*
 # ml service debug crap
 *.wav
 ml-service/*.pdf
+ml-service/*.mp3
+ml-service/*.jpeg
+ml-service/*.jpg
 
 __pycache__
 localstack
