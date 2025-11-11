@@ -606,20 +606,17 @@ def convert_to_audio_task(file_id):
         torch.cuda.synchronize()
 
         try:
-            # Move model to CPU to release GPU memory
-            tts_model.cpu()
+            # Move model components to CPU to release GPU memory
+            # ChatterboxTTS is not a PyTorch module, so we need to move each component
+            tts_model.t3.cpu()
+            tts_model.s3gen.cpu()
+            tts_model.ve.cpu()
+            if tts_model.conds is not None:
+                tts_model.conds.to('cpu')
+
             # Clear any model-specific caches if available
             if hasattr(tts_model, 'clear_cache'):
                 tts_model.clear_cache()
-
-            # Explicitly clear model parameters to release GPU memory
-            try:
-                for param in tts_model.parameters():
-                    param.data = torch.tensor([])
-                for buffer in tts_model.buffers():
-                    buffer.data = torch.tensor([])
-            except Exception as param_err:
-                logger.warning(f"Error clearing model parameters: {param_err}")
         except Exception as e:
             logger.warning(f"Error moving model to CPU: {e}")
 
@@ -676,20 +673,17 @@ def convert_to_audio_task(file_id):
             torch.cuda.synchronize()
 
             if 'tts_model' in locals():
-                # Move model to CPU before deletion to ensure GPU memory is released
+                # Move model components to CPU before deletion to ensure GPU memory is released
                 try:
-                    tts_model.cpu()
+                    # ChatterboxTTS is not a PyTorch module, so we need to move each component
+                    tts_model.t3.cpu()
+                    tts_model.s3gen.cpu()
+                    tts_model.ve.cpu()
+                    if tts_model.conds is not None:
+                        tts_model.conds.to('cpu')
+
                     if hasattr(tts_model, 'clear_cache'):
                         tts_model.clear_cache()
-
-                    # Explicitly clear model parameters
-                    try:
-                        for param in tts_model.parameters():
-                            param.data = torch.tensor([])
-                        for buffer in tts_model.buffers():
-                            buffer.data = torch.tensor([])
-                    except Exception as param_err:
-                        logger.warning(f"Error clearing model parameters during error cleanup: {param_err}")
                 except Exception as cleanup_err:
                     logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
 

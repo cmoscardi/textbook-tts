@@ -164,18 +164,25 @@ sleep 10
 # Wait for ML service to be healthy
 MAX_WAIT=120
 WAITED=0
+echo "Waiting for ML service to become healthy..."
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if docker compose -f "$COMPOSE_FILE" ps | grep -q "ml-service-prod.*healthy"; then
+    # Use docker inspect for reliable health status checking
+    HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' ml-service-prod 2>/dev/null || echo "no-healthcheck")
+
+    if [ "$HEALTH_STATUS" = "healthy" ]; then
         echo -e "${GREEN}ML Service is healthy!${NC}"
         break
     fi
-    echo "Waiting for ML service to be healthy... ($WAITED/$MAX_WAIT seconds)"
+
+    echo "ML service status: $HEALTH_STATUS ($WAITED/$MAX_WAIT seconds)"
     sleep 5
     WAITED=$((WAITED + 5))
 done
 
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo -e "${RED}Error: ML service failed to become healthy within $MAX_WAIT seconds${NC}"
+# Verify service is actually healthy after loop exits
+FINAL_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' ml-service-prod 2>/dev/null || echo "no-healthcheck")
+if [ "$FINAL_HEALTH" != "healthy" ]; then
+    echo -e "${RED}Error: ML service is not healthy (status: $FINAL_HEALTH)${NC}"
     echo "Checking logs..."
     docker compose -f "$COMPOSE_FILE" logs ml-service
     exit 1
@@ -183,18 +190,25 @@ fi
 
 # Wait for RabbitMQ to be healthy
 WAITED=0
+echo "Waiting for RabbitMQ to become healthy..."
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if docker compose -f "$COMPOSE_FILE" ps | grep -q "rabbitmq-prod.*healthy"; then
+    # Use docker inspect for reliable health status checking
+    HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' rabbitmq-prod 2>/dev/null || echo "no-healthcheck")
+
+    if [ "$HEALTH_STATUS" = "healthy" ]; then
         echo -e "${GREEN}RabbitMQ is healthy!${NC}"
         break
     fi
-    echo "Waiting for RabbitMQ to be healthy... ($WAITED/$MAX_WAIT seconds)"
+
+    echo "RabbitMQ status: $HEALTH_STATUS ($WAITED/$MAX_WAIT seconds)"
     sleep 5
     WAITED=$((WAITED + 5))
 done
 
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo -e "${RED}Error: RabbitMQ failed to become healthy within $MAX_WAIT seconds${NC}"
+# Verify service is actually healthy after loop exits
+FINAL_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' rabbitmq-prod 2>/dev/null || echo "no-healthcheck")
+if [ "$FINAL_HEALTH" != "healthy" ]; then
+    echo -e "${RED}Error: RabbitMQ is not healthy (status: $FINAL_HEALTH)${NC}"
     echo "Checking logs..."
     docker compose -f "$COMPOSE_FILE" logs rabbitmq
     exit 1
