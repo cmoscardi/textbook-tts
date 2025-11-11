@@ -308,221 +308,6 @@ def generate_output_file_path(user_id: str, original_filename: str) -> str:
     return f"{user_id}/converted_{timestamp}_{base_name}.mp3"
 
 
-@app.task()
-def convert_file(file_id):
-    logger.info(f"Starting convert_file task for file_id: {file_id}")
-
-    # Get the current task ID
-    task_id = convert_file.request.id
-    conversion_id = None
-
-    try:
-        # Get file information and signed URL
-        file_info = get_file_info(file_id)
-        if not file_info:
-            logger.error(f"Could not get file information for file_id: {file_id}")
-            return {"error": "Invalid file_id or file not found"}
-
-        # Create conversion record in database
-        conversion_id = create_conversion_record(file_id, task_id)
-        if not conversion_id:
-            logger.warning("Could not create conversion record - continuing without database tracking")
-
-        # Check if CUDA devices are available
-        if not torch.cuda.is_available():
-            logger.warning("No CUDA device available - returning dev mode message")
-            if conversion_id:
-                finalize_conversion(conversion_id, "test.mp3", "completed")
-            return "no cuda device -- dev mode"
-
-        logger.info("CUDA device available, proceeding with processing")
-        update_conversion_progress(conversion_id, 10, "running")
-
-        start = time.time()
-
-        # Download the file from the signed URL
-        logger.info(f"Downloading file from signed URL")
-        response = requests.get(file_info.signed_url)
-        response.raise_for_status()
-
-        # Save to temporary file
-        temp_file = f"/tmp/download_{task_id}.pdf"
-        with open(temp_file, "wb") as f:
-            f.write(response.content)
-        file_path = temp_file
-        logger.info(f"Downloaded file to: {file_path}")
-
-        update_conversion_progress(conversion_id, 20)
-
-        # Perform OCR
-        logger.info("Initializing PDF converter and creating model dictionary")
-        converter = PdfConverter(
-            artifact_dict=create_model_dict(),
-        )
-        update_conversion_progress(conversion_id, 30)
-
-        logger.info("Starting PDF conversion")
-        res = converter(file_path)
-        text, _, images = text_from_rendered(res)
-        logger.info(f"PDF conversion complete, extracted {len(text)} characters")
-        del converter
-        gc.collect()
-        torch.cuda.empty_cache()
-        logger.info("Cleaned up PDF converter resources")
-        update_conversion_progress(conversion_id, 50)
-
-        # Save extracted text for reference
-        logger.info("Writing extracted text to test-out.txt")
-        with open("test-out.txt", "w+") as text_out_f:
-            text_out_f.write(text)
-            text_out_f.write("\n")
-
-        def split_into_word_chunks(text, chunk_size=1024):
-            words = text.split()  # split by any whitespace
-            chunks = [
-                " ".join(words[i:i + chunk_size])
-                for i in range(0, len(words), chunk_size)
-            ]
-            return chunks
-
-        chunks = split_into_word_chunks(text, chunk_size=100)
-        import re
-        sentences = re.split(r'(?<=[.!?]) +', text)
-        logger.info(f"Split text into {len(sentences)} sentences for TTS processing")
-        update_conversion_progress(conversion_id, 60)
-
-        wavs = []
-        logger.info("Loading ChatterboxTTS model on CUDA")
-        logger.info(f"GPU memory allocated before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        tts_model = ChatterboxTTS.from_pretrained(device="cuda")
-        update_conversion_progress(conversion_id, 70)
-
-        logger.info("Starting TTS generation for all sentences")
-        for i, sentence in enumerate(sentences):
-            if i % 10 == 0:  # Log progress every 10 sentences
-                logger.info(f"Processing sentence {i+1}/{len(sentences)}")
-                # Update progress from 70% to 90% during TTS processing
-                progress = 70 + int((i / len(sentences)) * 20)
-                update_conversion_progress(conversion_id, progress)
-                # Clear CUDA cache periodically to prevent memory buildup
-                torch.cuda.empty_cache()
-
-            # Move generated audio to CPU immediately to free GPU memory
-            wav = tts_model.generate(sentence)
-            wavs.append(wav.cpu())
-
-        logger.info("Combining audio segments")
-        combined_audio = torch.cat(wavs, dim=1)  # Already on CPU
-
-        # Explicitly delete the list to free memory
-        del wavs
-        gc.collect()
-
-        # Save sample rate before cleaning up model
-        sample_rate = tts_model.sr
-
-        # Save to temporary WAV file first
-        temp_wav_file = f"/tmp/audio_{task_id}.wav"
-        logger.info(f"Saving combined audio to {temp_wav_file}")
-        ta.save(temp_wav_file, combined_audio, sample_rate)
-
-        # Convert WAV to MP3
-        temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
-        logger.info(f"Converting WAV to MP3: {temp_mp3_file}")
-        audio_segment = AudioSegment.from_wav(temp_wav_file)
-        audio_segment.export(temp_mp3_file, format="mp3", bitrate="192k")
-
-        update_conversion_progress(conversion_id, 90)
-
-        # Upload MP3 file to Supabase storage
-        logger.info("Uploading MP3 file to Supabase storage")
-        with open(temp_mp3_file, "rb") as audio_file:
-            audio_data = audio_file.read()
-
-        # Generate output file path using the file info we retrieved earlier
-        output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
-
-        uploaded_path = upload_audio_file(output_file_path, audio_data, file_info.user_id)
-        if uploaded_path:
-            # Finalize the conversion record
-            finalize_conversion(conversion_id, uploaded_path, "completed")
-            logger.info(f"Audio file uploaded successfully: {uploaded_path}")
-        else:
-            logger.error("Failed to upload audio file")
-            finalize_conversion(conversion_id, "", "failed")
-
-        # Cleanup
-        logger.info("Cleaning up TTS model resources")
-
-        # Move model to CPU before deletion to ensure GPU memory is released
-        try:
-            tts_model.cpu()
-            if hasattr(tts_model, 'clear_cache'):
-                tts_model.clear_cache()
-        except Exception as e:
-            logger.warning(f"Error moving model to CPU: {e}")
-
-        del tts_model
-        del combined_audio
-
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.empty_cache()  # Call twice to help with fragmentation
-        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-        # Clean up temporary files
-        if os.path.exists(temp_wav_file):
-            os.remove(temp_wav_file)
-        if os.path.exists(temp_mp3_file):
-            os.remove(temp_mp3_file)
-        if file_path.startswith("/tmp/download_"):
-            os.remove(file_path)
-
-        end = time.time()
-        processing_time = end - start
-        logger.info(f"Total processing time: {processing_time:.2f} seconds")
-
-        logger.info("Task completed successfully")
-        return {
-            "status": "completed",
-            "conversion_id": conversion_id,
-            "output_file_path": uploaded_path,
-            "processing_time": processing_time
-        }
-
-    except Exception as e:
-        logger.error(f"Error in convert_file: {str(e)}")
-        if conversion_id:
-            finalize_conversion(conversion_id, "", "failed")
-
-        # Cleanup on error
-        try:
-            if 'tts_model' in locals():
-                # Move model to CPU before deletion to ensure GPU memory is released
-                try:
-                    tts_model.cpu()
-                    if hasattr(tts_model, 'clear_cache'):
-                        tts_model.clear_cache()
-                except Exception as cleanup_err:
-                    logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
-
-                del tts_model
-
-            # Clean up any other GPU tensors
-            if 'combined_audio' in locals():
-                del combined_audio
-            if 'wavs' in locals():
-                del wavs
-
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.empty_cache()  # Call twice for fragmentation
-            logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        except Exception as cleanup_err:
-            logger.warning(f"Error during GPU cleanup: {cleanup_err}")
-
-        raise e
-
 
 @app.task()
 def parse_pdf_task(file_id):
@@ -573,6 +358,7 @@ def parse_pdf_task(file_id):
 
         # Perform PDF parsing with marker-pdf
         logger.info("Initializing PDF converter and creating model dictionary")
+        logger.info(f"GPU memory allocated before converter load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         converter = PdfConverter(
             artifact_dict=create_model_dict(),
         )
@@ -584,10 +370,26 @@ def parse_pdf_task(file_id):
         logger.info(f"PDF conversion complete, extracted {len(text)} characters")
 
         # Cleanup converter resources
+        logger.info("Cleaning up PDF converter resources")
+
+        # Move converter to CPU before deletion to ensure GPU memory is released
+        try:
+            converter.cpu()
+            if hasattr(converter, 'clear_cache'):
+                converter.clear_cache()
+        except Exception as e:
+            logger.warning(f"Error moving converter to CPU: {e}")
+
+        # Delete all intermediate results that might hold GPU tensors
         del converter
+        del res
+        if images:
+            del images
+
         gc.collect()
         torch.cuda.empty_cache()
-        logger.info("Cleaned up PDF converter resources")
+        torch.cuda.empty_cache()  # Call twice to help with fragmentation
+        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         update_parsing_progress(parsing_id, 60)
 
         # Text preprocessing - split into sentences
@@ -638,11 +440,32 @@ def parse_pdf_task(file_id):
         # Cleanup on error
         try:
             if 'converter' in locals():
+                # Move converter to CPU before deletion to ensure GPU memory is released
+                try:
+                    converter.cpu()
+                    if hasattr(converter, 'clear_cache'):
+                        converter.clear_cache()
+                except Exception as cleanup_err:
+                    logger.warning(f"Error moving converter to CPU during error cleanup: {cleanup_err}")
+
                 del converter
-                gc.collect()
-                torch.cuda.empty_cache()
-        except:
-            pass
+
+            # Clean up any other intermediate results that might hold GPU tensors
+            if 'res' in locals():
+                del res
+            if 'images' in locals():
+                del images
+            if 'text' in locals():
+                del text
+            if 'sentences' in locals():
+                del sentences
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # Call twice for fragmentation
+            logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        except Exception as cleanup_err:
+            logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
         # Clean up temporary file
         if temp_file and os.path.exists(temp_file):
@@ -701,6 +524,7 @@ def convert_to_audio_task(file_id):
         import re
         sentences = re.split(r'(?<=[.!?]) +', parsed_text)
         logger.info(f"Split text into {len(sentences)} sentences for TTS processing")
+        del parsed_text  # Free memory early - no longer needed
         update_conversion_progress(conversion_id, 20)
 
         # Initialize TTS model
@@ -713,23 +537,26 @@ def convert_to_audio_task(file_id):
 
         # Generate audio for each sentence
         logger.info("Starting TTS generation for all sentences")
-        for i, sentence in enumerate(sentences):
-            if i % 10 == 0:  # Log progress every 10 sentences
-                logger.info(f"Processing sentence {i+1}/{len(sentences)}")
-                # Update progress from 30% to 70% during TTS processing
-                progress = 30 + int((i / len(sentences)) * 40)
-                update_conversion_progress(conversion_id, progress)
-            # Move generated audio to CPU immediately to free GPU memory
-            wav = tts_model.generate(sentence)
-            wavs.append(wav.cpu())
+        # Use inference_mode to disable gradient tracking and reduce memory overhead
+        with torch.inference_mode():
+            for i, sentence in enumerate(sentences):
+                if i % 10 == 0:  # Log progress every 10 sentences
+                    logger.info(f"Processing sentence {i+1}/{len(sentences)}")
+                    # Update progress from 30% to 70% during TTS processing
+                    progress = 30 + int((i / len(sentences)) * 40)
+                    update_conversion_progress(conversion_id, progress)
+                # Move generated audio to CPU immediately to free GPU memory
+                wav = tts_model.generate(sentence)
+                wavs.append(wav.cpu())
 
-            # Clear CUDA cache periodically during generation
-            if i % 10 == 0:
-                torch.cuda.empty_cache()
+                # Clear CUDA cache periodically during generation
+                if i % 10 == 0:
+                    torch.cuda.empty_cache()
 
         logger.info("Combining audio segments")
         combined_audio = torch.cat(wavs, dim=1)  # Already on CPU
         del wavs  # Explicitly delete the list
+        del sentences  # Free memory - no longer needed
         gc.collect()
         update_conversion_progress(conversion_id, 75)
 
@@ -746,6 +573,7 @@ def convert_to_audio_task(file_id):
         logger.info(f"Converting WAV to MP3: {temp_mp3_file}")
         audio_segment = AudioSegment.from_wav(temp_wav_file)
         audio_segment.export(temp_mp3_file, format="mp3", bitrate="192k")
+        del audio_segment  # Free memory after export
 
         update_conversion_progress(conversion_id, 85)
 
@@ -758,6 +586,8 @@ def convert_to_audio_task(file_id):
         output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
 
         uploaded_path = upload_audio_file(output_file_path, audio_data, file_info.user_id)
+        del audio_data  # Free memory after upload
+
         if uploaded_path:
             # Finalize the conversion record
             finalize_conversion(conversion_id, uploaded_path, "completed")
@@ -770,22 +600,40 @@ def convert_to_audio_task(file_id):
 
         # Cleanup - move model to CPU before deletion
         logger.info("Cleaning up TTS model resources")
+        logger.info(f"GPU memory before cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
+        # Synchronize CUDA to ensure all operations are complete
+        torch.cuda.synchronize()
+
         try:
             # Move model to CPU to release GPU memory
             tts_model.cpu()
             # Clear any model-specific caches if available
             if hasattr(tts_model, 'clear_cache'):
                 tts_model.clear_cache()
+
+            # Explicitly clear model parameters to release GPU memory
+            try:
+                for param in tts_model.parameters():
+                    param.data = torch.tensor([])
+                for buffer in tts_model.buffers():
+                    buffer.data = torch.tensor([])
+            except Exception as param_err:
+                logger.warning(f"Error clearing model parameters: {param_err}")
         except Exception as e:
             logger.warning(f"Error moving model to CPU: {e}")
 
         del tts_model
         del combined_audio
         gc.collect()
+
+        # Comprehensive CUDA cleanup
         torch.cuda.empty_cache()
-        # Clear CUDA cache twice (helps with fragmented memory)
-        torch.cuda.empty_cache()
-        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        torch.cuda.empty_cache()  # Call twice for fragmentation
+        torch.cuda.ipc_collect()  # Clean up inter-process shared memory
+        torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
+
+        logger.info(f"GPU memory after cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
         # Clean up temporary files
         if temp_wav_file and os.path.exists(temp_wav_file):
@@ -822,27 +670,54 @@ def convert_to_audio_task(file_id):
 
         # Cleanup on error
         try:
+            logger.info(f"GPU memory before error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
+            # Synchronize CUDA to ensure all operations are complete
+            torch.cuda.synchronize()
+
             if 'tts_model' in locals():
                 # Move model to CPU before deletion to ensure GPU memory is released
                 try:
                     tts_model.cpu()
                     if hasattr(tts_model, 'clear_cache'):
                         tts_model.clear_cache()
+
+                    # Explicitly clear model parameters
+                    try:
+                        for param in tts_model.parameters():
+                            param.data = torch.tensor([])
+                        for buffer in tts_model.buffers():
+                            buffer.data = torch.tensor([])
+                    except Exception as param_err:
+                        logger.warning(f"Error clearing model parameters during error cleanup: {param_err}")
                 except Exception as cleanup_err:
                     logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
 
                 del tts_model
 
-            # Clean up any other GPU tensors
+            # Clean up any other GPU tensors and intermediate objects
             if 'combined_audio' in locals():
                 del combined_audio
             if 'wavs' in locals():
                 del wavs
+            if 'sentences' in locals():
+                del sentences
+            if 'parsed_text' in locals():
+                del parsed_text
+            if 'audio_segment' in locals():
+                del audio_segment
+            if 'audio_data' in locals():
+                del audio_data
 
             gc.collect()
+
+            # Comprehensive CUDA cleanup
             torch.cuda.empty_cache()
             torch.cuda.empty_cache()  # Call twice for fragmentation
-            logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+            torch.cuda.ipc_collect()  # Clean up inter-process shared memory
+            torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
+
+            logger.info(f"GPU memory after error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
         except Exception as cleanup_err:
             logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
