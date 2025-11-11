@@ -150,7 +150,7 @@ npx supabase secrets set \
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
 echo -e "${GREEN}Step 5: Building Docker images...${NC}"
-docker compose -f "$COMPOSE_FILE" build
+docker compose -f "$COMPOSE_FILE" build $1
 
 echo -e "${GREEN}Step 6: Stopping existing containers...${NC}"
 docker compose -f "$COMPOSE_FILE" down || true
