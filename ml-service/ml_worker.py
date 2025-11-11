@@ -606,6 +606,21 @@ def convert_to_audio_task(file_id):
         torch.cuda.synchronize()
 
         try:
+            # Clear T3 model caches explicitly before moving to CPU
+            # These caches hold GPU tensors that won't be freed by .cpu()
+            if hasattr(tts_model.t3, '_speech_pos_embedding_cache'):
+                del tts_model.t3._speech_pos_embedding_cache
+            if hasattr(tts_model.t3, '_speech_embedding_cache'):
+                del tts_model.t3._speech_embedding_cache
+            if hasattr(tts_model.t3, 'backend_cache'):
+                del tts_model.t3.backend_cache
+            if hasattr(tts_model.t3, 'backend_cache_params'):
+                del tts_model.t3.backend_cache_params
+            if hasattr(tts_model.t3, 'cudagraph_wrapper'):
+                del tts_model.t3.cudagraph_wrapper
+            if hasattr(tts_model.t3, 'patched_model'):
+                del tts_model.t3.patched_model
+
             # Move model components to CPU to release GPU memory
             # ChatterboxTTS is not a PyTorch module, so we need to move each component
             tts_model.t3.cpu()
@@ -629,6 +644,7 @@ def convert_to_audio_task(file_id):
         torch.cuda.empty_cache()  # Call twice for fragmentation
         torch.cuda.ipc_collect()  # Clean up inter-process shared memory
         torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
+        torch.cuda.reset_accumulated_memory_stats()  # Reset accumulated stats
 
         logger.info(f"GPU memory after cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
@@ -675,6 +691,21 @@ def convert_to_audio_task(file_id):
             if 'tts_model' in locals():
                 # Move model components to CPU before deletion to ensure GPU memory is released
                 try:
+                    # Clear T3 model caches explicitly before moving to CPU
+                    # These caches hold GPU tensors that won't be freed by .cpu()
+                    if hasattr(tts_model.t3, '_speech_pos_embedding_cache'):
+                        del tts_model.t3._speech_pos_embedding_cache
+                    if hasattr(tts_model.t3, '_speech_embedding_cache'):
+                        del tts_model.t3._speech_embedding_cache
+                    if hasattr(tts_model.t3, 'backend_cache'):
+                        del tts_model.t3.backend_cache
+                    if hasattr(tts_model.t3, 'backend_cache_params'):
+                        del tts_model.t3.backend_cache_params
+                    if hasattr(tts_model.t3, 'cudagraph_wrapper'):
+                        del tts_model.t3.cudagraph_wrapper
+                    if hasattr(tts_model.t3, 'patched_model'):
+                        del tts_model.t3.patched_model
+
                     # ChatterboxTTS is not a PyTorch module, so we need to move each component
                     tts_model.t3.cpu()
                     tts_model.s3gen.cpu()
@@ -710,6 +741,7 @@ def convert_to_audio_task(file_id):
             torch.cuda.empty_cache()  # Call twice for fragmentation
             torch.cuda.ipc_collect()  # Clean up inter-process shared memory
             torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
+            torch.cuda.reset_accumulated_memory_stats()  # Reset accumulated stats
 
             logger.info(f"GPU memory after error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
         except Exception as cleanup_err:
