@@ -53,5 +53,26 @@ shutdown() {
 # Trap signals for graceful shutdown
 trap shutdown SIGTERM SIGINT
 
-# Wait for both processes
-wait $API_PID $CELERY_PID
+# Monitor processes and restart Celery worker if it crashes
+echo "Monitoring services..."
+while true; do
+    # Check if API is still running
+    if ! kill -0 $API_PID 2>/dev/null; then
+        echo "ERROR: API server died. Exiting..."
+        exit 1
+    fi
+
+    # Check if Celery worker is still running
+    if ! kill -0 $CELERY_PID 2>/dev/null; then
+        echo "WARNING: Celery worker died. Restarting..."
+        celery -A ml_worker worker \
+            -c 1 \
+            --loglevel=info \
+            --max-tasks-per-child=1 \
+            --pool=solo &
+        CELERY_PID=$!
+        echo "Celery worker restarted with PID: $CELERY_PID"
+    fi
+
+    sleep 10
+done
