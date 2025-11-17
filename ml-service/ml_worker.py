@@ -29,7 +29,9 @@ rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
 logger.info(f"Initializing Celery with RabbitMQ host: {rabbitmq_host}")
 app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postgres_url)
-app.conf.update(broker_connection_retry_on_startup=True)
+
+# Load Celery configuration from config file
+app.config_from_object('celery_config')
 
 # Initialize Supabase client
 supabase_url = os.environ.get("SUPABASE_URL")
@@ -151,8 +153,8 @@ def update_parsing_progress(parsing_id: str, progress: int, status: str = None):
         return False
 
 
-def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed"):
-    """Finalize a parsing job and update the files table with parsed text"""
+def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed", raw_markdown: str = None):
+    """Finalize a parsing job and update the files table with parsed text and raw markdown"""
     if not supabase or not parsing_id:
         return False
 
@@ -164,14 +166,18 @@ def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: st
         }
         supabase.table("file_parsings").update(parsing_update).eq("parsing_id", parsing_id).execute()
 
-        # Update files table with parsed text
+        # Update files table with parsed text and raw markdown
         if status == "completed" and parsed_text:
             files_update = {
                 "parsed_text": parsed_text,
                 "parsed_at": "NOW()"
             }
+            # Add raw markdown if provided
+            if raw_markdown:
+                files_update["raw_markdown"] = raw_markdown
+
             supabase.table("files").update(files_update).eq("file_id", file_id).execute()
-            logger.info(f"Finalized parsing {parsing_id} and updated file {file_id} with parsed text")
+            logger.info(f"Finalized parsing {parsing_id} and updated file {file_id} with parsed text and raw markdown")
         else:
             logger.info(f"Finalized parsing {parsing_id} with status {status}")
 
@@ -239,6 +245,86 @@ def get_file_info(file_id: str):
     except Exception as e:
         logger.error(f"Failed to get file info: {e}")
         return None
+
+
+def clean_markdown_for_tts(text: str) -> str:
+    """Clean markdown text to make it suitable for text-to-speech
+
+    Removes markdown formatting while preserving the natural reading flow.
+    Keeps numbered lists as they read well in TTS.
+
+    Args:
+        text: Raw markdown text
+
+    Returns:
+        Cleaned text suitable for TTS
+    """
+    import re
+
+    if not text:
+        return ""
+
+    # Remove code blocks (must be done before inline code)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+
+    # Remove inline code backticks
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+
+    # Convert links [text](url) to just the text
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+
+    # Remove images ![alt](url)
+    text = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', '', text)
+
+    # Remove reference-style links [text][ref]
+    text = re.sub(r'\[([^\]]+)\]\[[^\]]*\]', r'\1', text)
+
+    # Remove link references [ref]: url
+    text = re.sub(r'^\[[^\]]+\]:\s*.*$', '', text, flags=re.MULTILINE)
+
+    # Remove header markers (# ## ###) but keep the text
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # Remove bold/italic markers
+    text = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', text)  # Bold+italic
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)      # Bold
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)          # Italic
+    text = re.sub(r'___([^_]+)___', r'\1', text)        # Bold+italic
+    text = re.sub(r'__([^_]+)__', r'\1', text)          # Bold
+    text = re.sub(r'_([^_]+)_', r'\1', text)            # Italic
+
+    # Remove strikethrough
+    text = re.sub(r'~~([^~]+)~~', r'\1', text)
+
+    # Remove bullet list markers (-, *, +) but KEEP numbered lists
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+
+    # Remove horizontal rules
+    text = re.sub(r'^[\s]*[-*_]{3,}[\s]*$', '', text, flags=re.MULTILINE)
+
+    # Remove HTML tags (if any)
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Remove blockquote markers
+    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
+
+    # Remove table formatting (basic approach)
+    # Remove table separator lines like |---|---|
+    text = re.sub(r'^\|?[\s]*:?-+:?[\s]*\|[\s]*:?-+:?[\s]*.*$', '', text, flags=re.MULTILINE)
+    # Remove table cell markers but keep content
+    text = re.sub(r'\|', ' ', text)
+
+    # Normalize whitespace
+    # Replace multiple spaces with single space
+    text = re.sub(r' +', ' ', text)
+    # Replace multiple newlines with double newline (paragraph breaks)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Remove trailing/leading whitespace from lines
+    text = '\n'.join(line.strip() for line in text.split('\n'))
+    # Remove leading/trailing whitespace from entire text
+    text = text.strip()
+
+    return text
 
 
 # Storage helper functions
@@ -392,18 +478,27 @@ def parse_pdf_task(file_id):
         logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         update_parsing_progress(parsing_id, 60)
 
+        # Store original raw markdown
+        raw_markdown = text
+        logger.info(f"Stored raw markdown ({len(raw_markdown)} characters)")
+
+        # Clean markdown for TTS
+        logger.info("Cleaning markdown for TTS")
+        cleaned_text = clean_markdown_for_tts(text)
+        logger.info(f"Cleaned text for TTS ({len(cleaned_text)} characters)")
+
         # Text preprocessing - split into sentences
         import re
-        sentences = re.split(r'(?<=[.!?]) +', text)
+        sentences = re.split(r'(?<=[.!?]) +', cleaned_text)
         logger.info(f"Split text into {len(sentences)} sentences")
 
-        # Save the parsed text
-        parsed_text = text
+        # Save the parsed text (cleaned version)
+        parsed_text = cleaned_text
         update_parsing_progress(parsing_id, 80)
 
-        # Save to database
-        logger.info(f"Saving parsed text to database ({len(parsed_text)} characters)")
-        finalize_parsing(parsing_id, file_id, parsed_text, "completed")
+        # Save to database (both raw markdown and cleaned text)
+        logger.info(f"Saving parsed text and raw markdown to database")
+        finalize_parsing(parsing_id, file_id, parsed_text, "completed", raw_markdown=raw_markdown)
         update_parsing_progress(parsing_id, 100)
 
         # Clean up temporary file
