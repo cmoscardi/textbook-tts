@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install Python dependencies
-RUN pip install librosa torchaudio resemble-perth safetensors transformers conformer s3tokenizer diffusers omegaconf
+RUN pip install librosa torchaudio resemble-perth safetensors transformers conformer s3tokenizer diffusers omegaconf pykakasi resampy spacy-pkuseg
 
 # Install chatterbox from git (no dependencies)
-RUN pip install git+https://github.com/rsxdalv/chatterbox.git@faster --no-dependencies
+RUN pip install git+https://github.com/rsxdalv/chatterbox.git@faster
 
 # Install additional Python packages
 RUN pip install python-doctr \

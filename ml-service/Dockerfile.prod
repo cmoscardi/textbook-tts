@@ -17,10 +17,10 @@ WORKDIR /app
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     librosa torchaudio resemble-perth safetensors transformers \
-    conformer s3tokenizer diffusers omegaconf
+    conformer s3tokenizer diffusers omegaconf pykakasi resampy spacy-pkuseg
 
 # Install chatterbox from git (no dependencies)
-RUN pip install --no-cache-dir git+https://github.com/rsxdalv/chatterbox.git@faster --no-dependencies
+RUN pip install --no-cache-dir git+https://github.com/rsxdalv/chatterbox.git@faster
 
 # Install additional Python packages
 RUN pip install --no-cache-dir \
