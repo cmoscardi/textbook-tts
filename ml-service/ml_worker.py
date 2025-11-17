@@ -30,8 +30,16 @@ postgres_url = os.environ.get("DATABASE_CELERY_URL")
 logger.info(f"Initializing Celery with RabbitMQ host: {rabbitmq_host}")
 app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postgres_url)
 
-# Load Celery configuration from config file
-app.config_from_object('celery_config')
+# Celery configuration for long-running GPU tasks
+app.conf.update(
+    broker_heartbeat=0,  # Disable heartbeat timeout for long-running tasks
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=None,  # Unlimited reconnection attempts
+    task_acks_late=True,  # Only acknowledge task after it completes
+    worker_prefetch_multiplier=1,  # Only fetch one task at a time (important for GPU)
+    task_soft_time_limit=600,  # 10 minutes soft limit
+    task_time_limit=900,  # 15 minutes hard limit
+)
 
 # Initialize Supabase client
 supabase_url = os.environ.get("SUPABASE_URL")
