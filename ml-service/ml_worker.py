@@ -435,6 +435,16 @@ def parse_pdf_task(file_id):
         logger.info("CUDA device available, proceeding with parsing")
         update_parsing_progress(parsing_id, 10, "running")
 
+        # Clear GPU memory at task start to ensure maximum available memory
+        logger.info(f"GPU memory before clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()  # Call twice to help with fragmentation
+        torch.cuda.ipc_collect()  # Clean up inter-process shared memory
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_accumulated_memory_stats()
+        logger.info(f"GPU memory after clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
         start = time.time()
 
         # Download the file from the signed URL
@@ -456,12 +466,13 @@ def parse_pdf_task(file_id):
         converter = PdfConverter(
             artifact_dict=create_model_dict(),
         )
-        update_parsing_progress(parsing_id, 30)
+        update_parsing_progress(parsing_id, 25)
 
         logger.info("Starting PDF conversion")
         res = converter(temp_file)
         text, _, images = text_from_rendered(res)
         logger.info(f"PDF conversion complete, extracted {len(text)} characters")
+        update_parsing_progress(parsing_id, 40)
 
         # Cleanup converter resources
         logger.info("Cleaning up PDF converter resources")
@@ -484,7 +495,7 @@ def parse_pdf_task(file_id):
         torch.cuda.empty_cache()
         torch.cuda.empty_cache()  # Call twice to help with fragmentation
         logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        update_parsing_progress(parsing_id, 60)
+        update_parsing_progress(parsing_id, 65)
 
         # Store original raw markdown
         raw_markdown = text
@@ -494,6 +505,7 @@ def parse_pdf_task(file_id):
         logger.info("Cleaning markdown for TTS")
         cleaned_text = clean_markdown_for_tts(text)
         logger.info(f"Cleaned text for TTS ({len(cleaned_text)} characters)")
+        update_parsing_progress(parsing_id, 75)
 
         # Text preprocessing - split into sentences
         import re
@@ -502,7 +514,7 @@ def parse_pdf_task(file_id):
 
         # Save the parsed text (cleaned version)
         parsed_text = cleaned_text
-        update_parsing_progress(parsing_id, 80)
+        update_parsing_progress(parsing_id, 90)
 
         # Save to database (both raw markdown and cleaned text)
         logger.info(f"Saving parsed text and raw markdown to database")
@@ -621,6 +633,16 @@ def convert_to_audio_task(file_id):
         logger.info("CUDA device available, proceeding with TTS conversion")
         update_conversion_progress(conversion_id, 10, "running")
 
+        # Clear GPU memory at task start to ensure maximum available memory
+        logger.info(f"GPU memory before clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()  # Call twice to help with fragmentation
+        torch.cuda.ipc_collect()  # Clean up inter-process shared memory
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_accumulated_memory_stats()
+        logger.info(f"GPU memory after clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
         start = time.time()
 
         # Split text into sentences for TTS processing
@@ -645,9 +667,11 @@ def convert_to_audio_task(file_id):
             for i, sentence in enumerate(sentences):
                 if i % 10 == 0:  # Log progress every 10 sentences
                     logger.info(f"Processing sentence {i+1}/{len(sentences)}")
-                    # Update progress from 30% to 70% during TTS processing
-                    progress = 30 + int((i / len(sentences)) * 40)
-                    update_conversion_progress(conversion_id, progress)
+
+                # Update progress from 30% to 70% during TTS processing
+                progress = 30 + int(((i + 1) / len(sentences)) * 40)
+                update_conversion_progress(conversion_id, progress)
+
                 # Move generated audio to CPU immediately to free GPU memory
                 wav = tts_model.generate(sentence)
                 wavs.append(wav.cpu())
@@ -687,6 +711,7 @@ def convert_to_audio_task(file_id):
 
         # Generate output file path
         output_file_path = generate_output_file_path(file_info.user_id, file_info.file_name or "converted_audio")
+        update_conversion_progress(conversion_id, 95)
 
         uploaded_path = upload_audio_file(output_file_path, audio_data, file_info.user_id)
         del audio_data  # Free memory after upload
@@ -698,8 +723,6 @@ def convert_to_audio_task(file_id):
         else:
             logger.error("Failed to upload audio file")
             finalize_conversion(conversion_id, "", "failed")
-
-        update_conversion_progress(conversion_id, 95)
 
         # Cleanup - move model to CPU before deletion
         logger.info("Cleaning up TTS model resources")
