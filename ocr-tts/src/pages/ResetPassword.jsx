@@ -59,7 +59,7 @@ export default function ResetPassword() {
 
       // Redirect to home page after 2 seconds
       setTimeout(() => {
-        navigate('/');
+        navigate('/app');
       }, 2000);
     } catch (err) {
       setError(err.message || 'Failed to update password. Please try again.');
@@ -99,7 +99,7 @@ export default function ResetPassword() {
             <h2 className="mt-4 text-2xl font-bold text-gray-900">Invalid Reset Link</h2>
             <p className="mt-2 text-gray-600">{error}</p>
             <button
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/app')}
               className="mt-6 w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors"
             >
               Return to Login
@@ -198,7 +198,7 @@ export default function ResetPassword() {
 
         <div className="mt-6 text-center">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/app')}
             className="text-sm text-gray-600 hover:text-gray-900"
           >
             Back to Login

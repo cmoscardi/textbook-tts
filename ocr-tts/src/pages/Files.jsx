@@ -677,7 +677,7 @@ export default function Files() {
                 <div className="flex flex-wrap gap-2">
                   {file.parsed_text && (
                     <Link
-                      to={`/view/${file.file_id}`}
+                      to={`/app/view/${file.file_id}`}
                       className="flex-1 min-w-[100px] text-center px-3 py-2 text-sm text-purple-600 bg-purple-50 hover:bg-purple-100 rounded flex items-center justify-center gap-1 transition-colors"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -767,7 +767,7 @@ export default function Files() {
                         <div className="flex space-x-2">
                           {file.parsed_text && (
                             <Link
-                              to={`/view/${file.file_id}`}
+                              to={`/app/view/${file.file_id}`}
                               className="text-purple-600 hover:text-purple-900 flex items-center gap-1"
                             >
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

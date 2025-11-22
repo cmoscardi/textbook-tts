@@ -120,7 +120,7 @@ export default function Layout() {
         `}>
           <div className="flex flex-col gap-3">
             <Link
-              to="/upload"
+              to="/app/upload"
               className="flex items-center gap-2 px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
               onClick={() => setMobileMenuOpen(false)}
             >
@@ -130,7 +130,7 @@ export default function Layout() {
               Upload Files
             </Link>
             <Link
-              to="/files"
+              to="/app/files"
               className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
               onClick={() => setMobileMenuOpen(false)}
             >

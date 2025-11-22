@@ -154,7 +154,7 @@ export default function FileViewer() {
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
           <Link
-            to="/files"
+            to="/app/files"
             className="inline-flex items-center text-blue-600 hover:text-blue-800"
           >
             <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -175,7 +175,7 @@ export default function FileViewer() {
       {/* Header with back button and file info */}
       <div className="mb-6">
         <Link
-          to="/files"
+          to="/app/files"
           className="inline-flex items-center text-blue-600 hover:text-blue-800 mb-4"
         >
           <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
