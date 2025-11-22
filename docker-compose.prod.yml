@@ -11,7 +11,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # PyTorch GPU memory optimization
-      - TORCH_COMPILE_DISABLE=1
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     volumes:
       # Persistent cache for models (read-only in production)

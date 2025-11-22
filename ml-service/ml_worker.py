@@ -2,20 +2,21 @@
 import gc
 import logging
 import os
+import sys
+import threading
 import time
 import uuid
 from collections import namedtuple
 from io import BytesIO
 from chatterbox.tts import ChatterboxTTS
 from celery import Celery
+from celery.signals import task_postrun
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
 import requests
 import torchaudio as ta
 from supabase import create_client, Client
 from pydub import AudioSegment
-
-
 
 
 # Configure logging
@@ -40,6 +41,35 @@ app.conf.update(
     task_soft_time_limit=600,  # 10 minutes soft limit
     task_time_limit=900,  # 15 minutes hard limit
 )
+
+# Nuclear option: Exit worker after each task to clear all GPU memory and child processes
+@task_postrun.connect
+def exit_worker_after_task(sender=None, **kwargs):
+    """Force worker to exit after each task completes.
+
+    This ensures complete cleanup of:
+    - All GPU memory
+    - PyTorch compile worker processes
+    - Any cached models or tensors
+
+    The monitoring script in run.prod.sh will automatically restart the worker.
+
+    Uses delayed exit to allow Celery time to acknowledge the task to RabbitMQ,
+    preventing task redelivery and infinite loops.
+    """
+    task_id = kwargs.get('task_id', 'unknown')
+    logger.info(f"Task {task_id} completed. Scheduling worker exit in 2 seconds to allow task acknowledgement...")
+
+    def delayed_exit():
+        """Wait for Celery to acknowledge task to RabbitMQ, then exit"""
+        time.sleep(2)  # Give Celery time to send ACK to RabbitMQ
+        logger.info("Exiting worker now to clear GPU memory and child processes...")
+        logger.info("Worker will be automatically restarted by monitoring script.")
+        os._exit(0)  # Force exit without Python exception handling
+
+    # Run exit in background thread so signal handler can return immediately
+    # This allows Celery to complete task acknowledgement
+    threading.Thread(target=delayed_exit, daemon=True).start()
 
 # Initialize Supabase client
 supabase_url = os.environ.get("SUPABASE_URL")
