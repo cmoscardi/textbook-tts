@@ -22,7 +22,7 @@ sleep 5
 
 docker compose up $1 -d
 NETWORK_ID=$(docker network ls --filter name=supabase_network_textbook-tts --format "{{.ID}}")
-supabase functions serve --env-file .env.development --network-id $NETWORK_ID &
+npx supabase functions serve --env-file .env.development --network-id $NETWORK_ID &
 
 # Wait for edge runtime container to be created
 echo "Waiting for edge runtime container to start..."
