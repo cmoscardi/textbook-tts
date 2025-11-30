@@ -613,15 +613,12 @@ export default function Files() {
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-800">My Files</h1>
-        <button
-          onClick={() => {
-            fetchFiles();
-            fetchConversions();
-          }}
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors w-full sm:w-auto"
+        <Link
+          to="/app/upload"
+          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors w-full sm:w-auto text-center"
         >
-          Refresh
-        </button>
+          Upload
+        </Link>
       </div>
 
       {error && (
