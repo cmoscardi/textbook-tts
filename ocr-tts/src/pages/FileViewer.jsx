@@ -60,17 +60,20 @@ export default function FileViewer() {
         .limit(1)
         .single();
 
-      // Only set conversion and audio if conversion exists and is completed
-      if (!conversionError && conversionData && conversionData.status === 'completed' && conversionData.file_path) {
+      // Set conversion data if it exists (regardless of status)
+      if (!conversionError && conversionData) {
         setConversion(conversionData);
 
-        // Generate signed URL for audio file
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('files')
-          .createSignedUrl(conversionData.file_path, 3600); // 1 hour expiry
+        // Only generate audio URL if conversion is completed and has file_path
+        if (conversionData.status === 'completed' && conversionData.file_path) {
+          // Generate signed URL for audio file
+          const { data: urlData, error: urlError } = await supabase.storage
+            .from('files')
+            .createSignedUrl(conversionData.file_path, 3600); // 1 hour expiry
 
-        if (!urlError && urlData?.signedUrl) {
-          setAudioUrl(urlData.signedUrl);
+          if (!urlError && urlData?.signedUrl) {
+            setAudioUrl(urlData.signedUrl);
+          }
         }
       }
 
