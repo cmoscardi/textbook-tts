@@ -39,7 +39,7 @@ export default function Landing() {
 
         {/* Small note */}
         <p className="mt-8 text-gray-600 text-sm">
-          No credit card. No BS. Just audio.
+          Really, that's it.
         </p>
       </div>
     </div>
