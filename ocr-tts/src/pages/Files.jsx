@@ -2,9 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
-
-// Map to track active polling jobs outside of React state
-const activePollingJobs = new Map();
+import ConvertButton from '../components/ConvertButton.jsx';
 
 export default function Files() {
   const { session } = useSession();
@@ -13,7 +11,6 @@ export default function Files() {
   const [error, setError] = useState('');
   const [conversions, setConversions] = useState({}); // file_id -> conversion data
   const [parsings, setParsings] = useState({}); // file_id -> parsing data
-  const [pollingIntervals, setPollingIntervals] = useState({}); // file_id -> interval ID
   const [audioFiles, setAudioFiles] = useState({}); // file_id -> signed URL cache
 
   useEffect(() => {
@@ -93,13 +90,6 @@ export default function Files() {
 
       setConversions(conversionMap);
 
-      // Start polling for active conversions
-      Object.values(conversionMap).forEach(conversion => {
-        if (conversion.status === 'pending' || conversion.status === 'running') {
-          startPolling(conversion.job_id, conversion.file_id);
-        }
-      });
-
     } catch (err) {
       console.error('Error fetching conversions:', err);
       // Don't set error state here as it's not critical for the main functionality
@@ -140,105 +130,6 @@ export default function Files() {
     } catch (err) {
       console.error('Error fetching parsings:', err);
       // Don't set error state here as it's not critical for the main functionality
-    }
-  };
-
-  const startPolling = (jobId, fileId) => {
-    // Don't start multiple intervals for the same job
-    if (activePollingJobs.has(jobId)) {
-      console.log('Polling already exists for job_id:', jobId);
-      return;
-    }
-    
-    console.log('Starting polling for job_id:', jobId, 'file_id:', fileId);
-    console.log('Current active jobs:', Array.from(activePollingJobs.keys()));
-
-    // Mark job as active
-    activePollingJobs.set(jobId, true);
-    console.log('Marked job as active:', jobId, 'Map size:', activePollingJobs.size);
-    
-    const intervalId = setInterval(async () => {
-      const isActive = activePollingJobs.get(jobId);
-      console.log('Polling execution check for job_id:', jobId, 'isActive:', isActive);
-      if (!isActive) {
-        console.log('Polling marked inactive for job_id:', jobId, 'stopping execution');
-        clearInterval(intervalId);
-        activePollingJobs.delete(jobId);
-        return;
-      }
-      
-      try {
-        const { data, error } = await supabase
-          .from('file_conversions')
-          .select('*')
-          .eq('job_id', jobId)
-          .limit(1);
-
-        if (error) throw error;
-
-        if (data && data.length > 0) {
-          const conversion = data[0];
-          console.log('Polling update for job_id:', jobId, 'status:', conversion.status, 'progress:', conversion.job_completion);
-
-          // Check if we need to stop polling before updating state
-          const shouldStop = conversion.status === 'completed' || conversion.status === 'failed';
-          
-          setConversions(prev => {
-            // For active conversions, update the file's conversion
-            // For completed/failed, keep them in state for downloads
-            const newState = { ...prev };
-            newState[fileId] = conversion;
-            return newState;
-          });
-
-          // Stop polling after state update if conversion is done
-          if (shouldStop) {
-            console.log('Conversion finished for job_id:', jobId, 'final status:', conversion.status);
-            activePollingJobs.set(jobId, false); // Mark as inactive to stop future executions
-            clearInterval(intervalId);
-            setPollingIntervals(prev => {
-              const newIntervals = { ...prev };
-              delete newIntervals[jobId];
-              return newIntervals;
-            });
-          }
-        } else {
-          console.log('No data found for job_id:', jobId);
-        }
-      } catch (err) {
-        console.error('Error polling conversion status:', err);
-        activePollingJobs.set(jobId, false);
-        clearInterval(intervalId);
-        setPollingIntervals(prev => {
-          const newIntervals = { ...prev };
-          delete newIntervals[jobId];
-          return newIntervals;
-        });
-      }
-    }, 3000); // Poll every 3 seconds
-
-    setPollingIntervals(prev => {
-      const newState = {
-        ...prev,
-        [jobId]: intervalId
-      };
-      console.log('Updated polling intervals state:', Object.keys(newState));
-      return newState;
-    });
-  };
-
-  const stopPolling = (jobId) => {
-    console.log('Stopping polling for job_id:', jobId);
-    activePollingJobs.set(jobId, false); // Mark as inactive first
-    if (pollingIntervals[jobId]) {
-      clearInterval(pollingIntervals[jobId]);
-      setPollingIntervals(prev => {
-        const newIntervals = { ...prev };
-        delete newIntervals[jobId];
-        return newIntervals;
-      });
-    } else {
-      console.log('No polling interval found for job_id:', jobId);
     }
   };
 
@@ -374,65 +265,6 @@ export default function Files() {
     }
   };
 
-  const handleConvert = async (file) => {
-    try {
-      setError('');
-
-      // Check if there's already an active conversion for this file
-      const existingConversion = conversions[file.file_id];
-      if (existingConversion && 
-          (existingConversion.status === 'pending' || existingConversion.status === 'running')) {
-        setError('Conversion already in progress for this file');
-        return;
-      }
-
-      // Call Supabase Edge Function for file conversion
-      const { data, error } = await supabase.functions.invoke('convert-file', {
-        body: {
-          file_id: file.file_id,
-          file_path: file.file_path
-        }
-      });
-
-      if (error) {
-        throw new Error(`Conversion service error: ${error.message}`);
-      }
-
-      if (!data?.id) {
-        throw new Error('Invalid response from conversion service');
-      }
-
-      console.log('Conversion started:', data);
-      console.log('Starting polling for job_id:', data.id, 'file_id:', file.file_id);
-
-      // Create a pending conversion record locally for immediate UI feedback
-      const pendingConversion = {
-        conversion_id: `pending-${data.id}`,
-        file_id: file.file_id,
-        job_id: data.id,
-        job_completion: 0,
-        status: 'pending',
-        file_path: '',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      // Update state - this will overwrite any completed conversion, which is fine for "Convert Again"
-      setConversions(prev => ({
-        ...prev,
-        [file.file_id]: pendingConversion
-      }));
-
-      // Start polling for this conversion immediately
-      console.log('About to start polling for job_id:', data.id);
-      startPolling(data.id, file.file_id);
-
-    } catch (err) {
-      console.error('Convert error:', err);
-      setError(`Failed to start conversion: ${err.message}`);
-    }
-  };
-
   const handleDelete = async (file) => {
     if (!confirm(`Are you sure you want to delete "${file.file_name}"?`)) {
       return;
@@ -527,44 +359,9 @@ export default function Files() {
       );
     }
 
-    // File is parsed, check conversion status
-    if (!conversion) {
-      // No conversion - show convert button
-      return (
-        <button
-          onClick={() => handleConvert(file)}
-          className="text-green-600 hover:text-green-900 flex items-center gap-1 px-3 py-1 border border-green-600 rounded hover:bg-green-50 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-          </svg>
-          Convert
-        </button>
-      );
-    }
-
-    if (conversion.status === 'pending' || conversion.status === 'running') {
-      // Active conversion - show progress
-      return (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <div className="w-16 bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${conversion.job_completion}%` }}
-              ></div>
-            </div>
-            <span className="text-xs text-gray-600">{conversion.job_completion}%</span>
-          </div>
-          <span className="text-xs text-blue-600">
-            {conversion.status === 'pending' ? 'Starting...' : 'Converting...'}
-          </span>
-        </div>
-      );
-    }
-
-    if (conversion.status === 'completed') {
-      // Completed - show download link
+    // File is parsed - show conversion status/button
+    // Show download button if completed, otherwise show ConvertButton
+    if (conversion && conversion.status === 'completed') {
       return (
         <div className="flex flex-col gap-1">
           <button
@@ -580,23 +377,21 @@ export default function Files() {
       );
     }
 
-    if (conversion.status === 'failed') {
-      // Failed - show retry button
-      return (
-        <div className="flex flex-col gap-1">
-          <span className="text-xs text-red-600">Failed</span>
-          <button
-            onClick={() => handleConvert(file)}
-            className="text-orange-600 hover:text-orange-900 flex items-center gap-1 px-2 py-1 text-sm"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Retry
-          </button>
-        </div>
-      );
-    }
+    // For all other states (no conversion, pending, running, failed), use ConvertButton
+    return (
+      <ConvertButton
+        fileId={file.file_id}
+        filePath={file.file_path}
+        existingConversion={conversion}
+        onConversionComplete={(data) => {
+          // Update local state when conversion completes
+          setConversions(prev => ({
+            ...prev,
+            [file.file_id]: data
+          }));
+        }}
+      />
+    );
 
     return null;
   };

@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
+import ConvertButton from '../components/ConvertButton.jsx';
 
 export default function FileViewer() {
   const { fileId } = useParams();
@@ -97,12 +98,6 @@ export default function FileViewer() {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const handleCopyMarkdown = () => {
-    navigator.clipboard.writeText(file.parsed_text);
-    // You could add a toast notification here
-    alert('Markdown copied to clipboard!');
   };
 
   const handleDownloadMarkdown = () => {
@@ -222,16 +217,15 @@ export default function FileViewer() {
 
             {/* Action buttons */}
             <div className="flex gap-2 ml-4">
-              <button
-                onClick={handleCopyMarkdown}
-                className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors flex items-center gap-2"
-                title="Copy markdown to clipboard"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                Copy
-              </button>
+              <ConvertButton
+                fileId={fileId}
+                filePath={file.file_path}
+                existingConversion={conversion}
+                onConversionComplete={(data) => {
+                  setConversion(data);
+                  fetchFile(); // Refresh to show audio player
+                }}
+              />
               <button
                 onClick={handleDownloadMarkdown}
                 className="px-3 py-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
