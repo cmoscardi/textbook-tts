@@ -29,12 +29,12 @@ export default function ConvertButton({
     };
   }, []);
 
-  // Start polling if there's an active conversion on mount
+  // Start polling if there's an active conversion
   useEffect(() => {
     if (conversion && (conversion.status === 'pending' || conversion.status === 'running')) {
       startPolling(conversion.job_id);
     }
-  }, []);
+  }, [conversion]);
 
   const startPolling = (jobId) => {
     // Don't start if already polling

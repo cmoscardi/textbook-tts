@@ -21,20 +21,6 @@ export default function Files() {
     }
   }, [session]);
 
-  // Clean up polling intervals on unmount
-  useEffect(() => {
-    return () => {
-      // Only run cleanup on actual unmount
-      console.log('Component unmounting, cleaning up polling intervals');
-      activePollingJobs.forEach((_, jobId) => {
-        activePollingJobs.set(jobId, false);
-      });
-      Object.values(pollingIntervals).forEach(intervalId => {
-        clearInterval(intervalId);
-      });
-    };
-  }, []); // Empty dependency array - only run on mount/unmount
-
   const fetchFiles = async () => {
     try {
       setLoading(true);
