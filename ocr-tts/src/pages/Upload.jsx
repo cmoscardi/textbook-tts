@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 
 export default function Upload() {
   const { session } = useSession();
+  const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
@@ -94,15 +96,19 @@ export default function Upload() {
       }
 
       if (data) {
-        const { status, job_completion } = data;
+        const { status, job_completion, file_id } = data;
         setParsingProgress(job_completion);
 
         if (status === 'completed') {
-          setUploadStatus('Upload and parsing complete! File is ready for conversion.');
+          setUploadStatus('Upload and parsing complete! Redirecting...');
           setIsParsing(false);
-          setSelectedFile(null);
           clearInterval(pollingIntervalRef.current);
           pollingIntervalRef.current = null;
+
+          // Redirect to file viewer
+          setTimeout(() => {
+            navigate(`/app/view/${file_id}`);
+          }, 500);
         } else if (status === 'failed') {
           setUploadStatus(`Parsing failed: ${data.error_message || 'Unknown error'}`);
           setIsParsing(false);
@@ -196,8 +202,19 @@ export default function Upload() {
 
   return (
     <div className="max-w-md mx-auto bg-white rounded-lg shadow-md p-6">
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Upload File</h1>
-      
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-800">Upload File</h1>
+        <Link
+          to="/app/files"
+          className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          View Files
+        </Link>
+      </div>
+
       <div className="space-y-4">
         <div>
           <label htmlFor="file-upload" className="block text-sm font-medium text-gray-700 mb-2">
