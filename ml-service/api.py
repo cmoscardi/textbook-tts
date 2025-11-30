@@ -6,6 +6,7 @@ import logging
 import time
 import os
 from typing import Annotated
+import torch
 
 from ml_worker import app as celery_app
 from ml_worker import parse_pdf_task, convert_to_audio_task
@@ -70,13 +71,39 @@ logger.info("FastAPI application initialized with CORS enabled")
 def health_check():
     """
     Health check endpoint for monitoring and load balancers.
+    Includes CUDA device health check to ensure GPU is responsive.
 
     Returns:
         dict: Service status information
+
+    Raises:
+        HTTPException: If CUDA device is unavailable or unresponsive
     """
+    cuda_status = "not_available"
+    cuda_error = None
+
+    # Test CUDA availability and responsiveness
+    if torch.cuda.is_available():
+        try:
+            # Test GPU responsiveness with simple operation
+            torch.cuda.synchronize()
+            test_tensor = torch.zeros(1).cuda()
+            del test_tensor
+            torch.cuda.empty_cache()
+            cuda_status = "healthy"
+        except Exception as e:
+            cuda_status = "unhealthy"
+            cuda_error = str(e)
+            logger.error(f"CUDA health check failed: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"CUDA device unresponsive: {str(e)}"
+            )
+
     return {
         "status": "healthy",
         "service": "ml-service",
+        "cuda_status": cuda_status,
         "timestamp": time.time()
     }
 

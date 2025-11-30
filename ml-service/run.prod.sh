@@ -20,7 +20,7 @@ fi
 # Start FastAPI with Gunicorn for production
 echo "Starting FastAPI API server with Gunicorn..."
 gunicorn api:app \
-    --workers 4 \
+    --workers 1 \
     --worker-class uvicorn.workers.UvicornWorker \
     --bind 0.0.0.0:8001 \
     --timeout 300 \

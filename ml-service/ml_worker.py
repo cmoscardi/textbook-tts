@@ -63,6 +63,26 @@ def exit_worker_after_task(sender=None, **kwargs):
     def delayed_exit():
         """Wait for Celery to acknowledge task to RabbitMQ, then exit"""
         time.sleep(2)  # Give Celery time to send ACK to RabbitMQ
+
+        # Aggressive CUDA cleanup before exit to prevent "device busy" errors
+        logger.info("Performing CUDA device reset before worker exit...")
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+
+                # Reset all CUDA devices
+                for device_id in range(torch.cuda.device_count()):
+                    with torch.cuda.device(device_id):
+                        torch.cuda.reset_peak_memory_stats()
+                        torch.cuda.reset_accumulated_memory_stats()
+
+                torch.cuda.empty_cache()
+                logger.info("CUDA device reset completed")
+        except Exception as e:
+            logger.warning(f"Error during CUDA cleanup: {e}")
+
         logger.info("Exiting worker now to clear GPU memory and child processes...")
         logger.info("Worker will be automatically restarted by monitoring script.")
         os._exit(0)  # Force exit without Python exception handling
@@ -86,6 +106,24 @@ import torch
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
+
+# CUDA health check at worker startup
+if torch.cuda.is_available():
+    try:
+        logger.info("Running CUDA device health check at worker startup...")
+        torch.cuda.synchronize()
+        # Test GPU responsiveness with simple operation
+        test_tensor = torch.zeros(1).cuda()
+        del test_tensor
+        torch.cuda.empty_cache()
+        logger.info("CUDA device health check passed - GPU is responsive")
+    except Exception as e:
+        logger.error(f"CUDA device health check FAILED: {e}")
+        logger.error("GPU may be in an unresponsive state. Worker will exit.")
+        # Exit immediately - Docker health check or monitoring script will restart
+        os._exit(1)
+else:
+    logger.warning("CUDA not available at worker startup")
 
 # Named tuple for file information
 FileInfo = namedtuple('FileInfo', ['signed_url', 'file_name', 'user_id'])
