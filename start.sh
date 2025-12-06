@@ -9,9 +9,10 @@ cd $SCRIPT_DIR
 
 # Check if nvidia runtime is available
 if docker info 2>/dev/null | grep -q "nvidia"; then
-    echo "NVIDIA runtime detected, using GPU acceleration..."
-    export DOCKER_RUNTIME=nvidia
-    export NVIDIA_VISIBLE_DEVICES=all
+    # echo "NVIDIA runtime detected, using GPU acceleration..."
+    echo "CUDA detected, but not using gpu accel for dev mode"
+    export DOCKER_RUNTIME=runc
+    export NVIDIA_VISIBLE_DEVICES=non
 else
     echo "No NVIDIA runtime detected, using CPU-only mode..."
     export DOCKER_RUNTIME=runc

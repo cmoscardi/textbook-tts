@@ -79,26 +79,8 @@ def health_check():
     Raises:
         HTTPException: If CUDA device is unavailable or unresponsive
     """
-    cuda_status = "not_available"
-    cuda_error = None
-
-    # Test CUDA availability and responsiveness
-    if torch.cuda.is_available():
-        try:
-            # Test GPU responsiveness with simple operation
-            torch.cuda.synchronize()
-            test_tensor = torch.zeros(1).cuda()
-            del test_tensor
-            torch.cuda.empty_cache()
-            cuda_status = "healthy"
-        except Exception as e:
-            cuda_status = "unhealthy"
-            cuda_error = str(e)
-            logger.error(f"CUDA health check failed: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"CUDA device unresponsive: {str(e)}"
-            )
+    # API container runs on CPU only (workers handle GPU processing)
+    cuda_status = "not_required_api_cpu_only"
 
     return {
         "status": "healthy",

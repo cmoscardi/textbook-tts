@@ -15,26 +15,74 @@ services:
     env_file:
       - .env.development
 
-  ml-service:
+  ml-api:
     build:
       context: ./ml-service
       dockerfile: Dockerfile
-    container_name: pytorch-cuda
-    runtime: ${DOCKER_RUNTIME:-runc}
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-none}
+    container_name: ml-api
+    runtime: runc  # No GPU for API
     volumes:
       - ./ml-service:/app
       - ./hf-cache:/root/.cache/huggingface
       - ./dl-cache:/root/.cache/datalab
     working_dir: /app
-    command: ./run.sh
+    command: ./run-api.sh
     ports:
       - "8001:8001"
     env_file:
       - .env.development
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=none
     networks:
       - supabase_network_textbook-tts
+    depends_on:
+      - rabbitmq
+
+  parser:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: parser
+    runtime: ${DOCKER_RUNTIME:-runc}
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-none}  # Set by start.sh
+      - WORKER_TYPE=parser
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./ml-service:/app
+      - ./hf-cache:/root/.cache/huggingface
+      - ./dl-cache:/root/.cache/datalab
+    working_dir: /app
+    command: ./run-parser.sh
+    env_file:
+      - .env.development
+    networks:
+      - supabase_network_textbook-tts
+    depends_on:
+      - rabbitmq
+
+  converter:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: converter
+    runtime: ${DOCKER_RUNTIME:-runc}
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-none}  # Set by start.sh
+      - WORKER_TYPE=converter
+      - CUDA_VISIBLE_DEVICES=0  # Always appears as device 0 inside container
+    volumes:
+      - ./ml-service:/app
+      - ./hf-cache:/root/.cache/huggingface
+      - ./dl-cache:/root/.cache/datalab
+    working_dir: /app
+    command: ./run-converter.sh
+    env_file:
+      - .env.development
+    networks:
+      - supabase_network_textbook-tts
+    depends_on:
+      - rabbitmq
 
   rabbitmq:
     container_name: rabbitmq

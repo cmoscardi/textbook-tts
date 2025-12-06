@@ -40,56 +40,13 @@ app.conf.update(
     worker_prefetch_multiplier=1,  # Only fetch one task at a time (important for GPU)
     task_soft_time_limit=600,  # 10 minutes soft limit
     task_time_limit=900,  # 15 minutes hard limit
+
+    # Task routing configuration
+    task_routes={
+        'ml_worker.parse_pdf_task': {'queue': 'parse_queue'},
+        'ml_worker.convert_to_audio_task': {'queue': 'convert_queue'},
+    },
 )
-
-# Nuclear option: Exit worker after each task to clear all GPU memory and child processes
-@task_postrun.connect
-def exit_worker_after_task(sender=None, **kwargs):
-    """Force worker to exit after each task completes.
-
-    This ensures complete cleanup of:
-    - All GPU memory
-    - PyTorch compile worker processes
-    - Any cached models or tensors
-
-    The monitoring script in run.prod.sh will automatically restart the worker.
-
-    Uses delayed exit to allow Celery time to acknowledge the task to RabbitMQ,
-    preventing task redelivery and infinite loops.
-    """
-    task_id = kwargs.get('task_id', 'unknown')
-    logger.info(f"Task {task_id} completed. Scheduling worker exit in 2 seconds to allow task acknowledgement...")
-
-    def delayed_exit():
-        """Wait for Celery to acknowledge task to RabbitMQ, then exit"""
-        time.sleep(2)  # Give Celery time to send ACK to RabbitMQ
-
-        # Aggressive CUDA cleanup before exit to prevent "device busy" errors
-        logger.info("Performing CUDA device reset before worker exit...")
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()  # Wait for all CUDA operations to complete
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-
-                # Reset all CUDA devices
-                for device_id in range(torch.cuda.device_count()):
-                    with torch.cuda.device(device_id):
-                        torch.cuda.reset_peak_memory_stats()
-                        torch.cuda.reset_accumulated_memory_stats()
-
-                torch.cuda.empty_cache()
-                logger.info("CUDA device reset completed")
-        except Exception as e:
-            logger.warning(f"Error during CUDA cleanup: {e}")
-
-        logger.info("Exiting worker now to clear GPU memory and child processes...")
-        logger.info("Worker will be automatically restarted by monitoring script.")
-        os._exit(0)  # Force exit without Python exception handling
-
-    # Run exit in background thread so signal handler can return immediately
-    # This allows Celery to complete task acknowledgement
-    threading.Thread(target=delayed_exit, daemon=True).start()
 
 # Initialize Supabase client
 supabase_url = os.environ.get("SUPABASE_URL")
@@ -124,6 +81,89 @@ if torch.cuda.is_available():
         os._exit(1)
 else:
     logger.warning("CUDA not available at worker startup")
+
+# ============================================================================
+# SINGLETON MODEL INITIALIZATION
+# ============================================================================
+
+# Global singleton model instances (initialized at worker startup)
+pdf_converter = None
+tts_model = None
+
+def initialize_parser_models():
+    """Initialize PDF parsing models (parser worker only)
+
+    This loads the marker-pdf PdfConverter once at worker startup.
+    The model stays in GPU memory and is reused across all parse tasks.
+    """
+    global pdf_converter
+
+    if pdf_converter is not None:
+        logger.info("PDF converter already initialized")
+        return
+
+    logger.info("=" * 60)
+    logger.info("INITIALIZING PDF CONVERTER SINGLETON")
+    logger.info("=" * 60)
+    logger.info(f"GPU memory before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+
+    pdf_converter = PdfConverter(
+        artifact_dict=create_model_dict(),
+    )
+
+    logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    logger.info("PDF converter singleton initialized successfully")
+    logger.info("This model will be reused for all parse tasks")
+    logger.info("=" * 60)
+
+def initialize_converter_models():
+    """Initialize TTS models (converter worker only)
+
+    This loads ChatterboxTTS once at worker startup.
+    The model stays in GPU memory and is reused across all convert tasks.
+    """
+    global tts_model
+
+    if tts_model is not None:
+        logger.info("TTS model already initialized")
+        return
+
+    logger.info("=" * 60)
+    logger.info("INITIALIZING CHATTERBOX TTS SINGLETON")
+    logger.info("=" * 60)
+    logger.info(f"GPU memory before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+    from chatterbox.tts import ChatterboxTTS
+
+    tts_model = ChatterboxTTS.from_pretrained(device="cuda")
+
+    logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    logger.info("ChatterboxTTS singleton initialized successfully")
+    logger.info("This model will be reused for all convert tasks")
+    logger.info("=" * 60)
+
+# Worker startup: Initialize models based on WORKER_TYPE environment variable
+worker_type = os.environ.get("WORKER_TYPE")
+
+if worker_type == "parser":
+    logger.info("Worker type: PARSER - Loading PDF parsing models...")
+    if torch.cuda.is_available():
+        initialize_parser_models()
+    else:
+        logger.warning("CUDA not available - parser models will be loaded on-demand (dev mode)")
+
+elif worker_type == "converter":
+    logger.info("Worker type: CONVERTER - Loading TTS models...")
+    if torch.cuda.is_available():
+        initialize_converter_models()
+    else:
+        logger.warning("CUDA not available - TTS models will be loaded on-demand (dev mode)")
+
+else:
+    logger.info(f"Worker type: {worker_type or 'NONE'} - No models loaded (API mode)")
 
 # Named tuple for file information
 FileInfo = namedtuple('FileInfo', ['signed_url', 'file_name', 'user_id'])
@@ -528,40 +568,29 @@ def parse_pdf_task(file_id):
 
         update_parsing_progress(parsing_id, 20)
 
-        # Perform PDF parsing with marker-pdf
-        logger.info("Initializing PDF converter and creating model dictionary")
-        logger.info(f"GPU memory allocated before converter load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        converter = PdfConverter(
-            artifact_dict=create_model_dict(),
-        )
+        # Use singleton PDF converter
+        logger.info("Using singleton PDF converter (no reload)")
+        if pdf_converter is None:
+            # Dev mode fallback: initialize on-demand if not loaded at startup
+            logger.warning("Singleton not initialized, loading on-demand (dev mode)")
+            initialize_parser_models()
+
         update_parsing_progress(parsing_id, 25)
 
-        logger.info("Starting PDF conversion")
-        res = converter(temp_file)
+        logger.info("Starting PDF conversion with singleton model")
+        res = pdf_converter(temp_file)
         text, _, images = text_from_rendered(res)
         logger.info(f"PDF conversion complete, extracted {len(text)} characters")
         update_parsing_progress(parsing_id, 40)
 
-        # Cleanup converter resources
-        logger.info("Cleaning up PDF converter resources")
-
-        # Move converter to CPU before deletion to ensure GPU memory is released
-        try:
-            converter.cpu()
-            if hasattr(converter, 'clear_cache'):
-                converter.clear_cache()
-        except Exception as e:
-            logger.warning(f"Error moving converter to CPU: {e}")
-
-        # Delete all intermediate results that might hold GPU tensors
-        del converter
+        # Cleanup intermediate results only (NOT the singleton model)
+        logger.info("Cleaning up intermediate conversion results (keeping singleton)")
         del res
         if images:
             del images
 
         gc.collect()
         torch.cuda.empty_cache()
-        torch.cuda.empty_cache()  # Call twice to help with fragmentation
         logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         update_parsing_progress(parsing_id, 65)
 
@@ -622,18 +651,8 @@ def parse_pdf_task(file_id):
 
         # Cleanup on error
         try:
-            if 'converter' in locals():
-                # Move converter to CPU before deletion to ensure GPU memory is released
-                try:
-                    converter.cpu()
-                    if hasattr(converter, 'clear_cache'):
-                        converter.clear_cache()
-                except Exception as cleanup_err:
-                    logger.warning(f"Error moving converter to CPU during error cleanup: {cleanup_err}")
-
-                del converter
-
-            # Clean up any other intermediate results that might hold GPU tensors
+            # Clean up intermediate results only (keep singleton)
+            # NO cleanup of pdf_converter - it's a singleton
             if 'res' in locals():
                 del res
             if 'images' in locals():
@@ -645,7 +664,6 @@ def parse_pdf_task(file_id):
 
             gc.collect()
             torch.cuda.empty_cache()
-            torch.cuda.empty_cache()  # Call twice for fragmentation
             logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         except Exception as cleanup_err:
             logger.warning(f"Error during GPU cleanup: {cleanup_err}")
@@ -720,12 +738,14 @@ def convert_to_audio_task(file_id):
         del parsed_text  # Free memory early - no longer needed
         update_conversion_progress(conversion_id, 20)
 
-        # Initialize TTS model
+        # Use singleton TTS model
         wavs = []
-        logger.info("Loading ChatterboxTTS model on CUDA")
-        logger.info(f"GPU memory before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        tts_model = ChatterboxTTS.from_pretrained(device="cuda")
-        logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        logger.info("Using singleton ChatterboxTTS model (no reload)")
+        if tts_model is None:
+            # Dev mode fallback: initialize on-demand if not loaded at startup
+            logger.warning("Singleton not initialized, loading on-demand (dev mode)")
+            initialize_converter_models()
+
         update_conversion_progress(conversion_id, 30)
 
         # Generate audio for each sentence
@@ -792,55 +812,13 @@ def convert_to_audio_task(file_id):
             logger.error("Failed to upload audio file")
             finalize_conversion(conversion_id, "", "failed")
 
-        # Cleanup - move model to CPU before deletion
-        logger.info("Cleaning up TTS model resources")
-        logger.info(f"GPU memory before cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-
-        # Synchronize CUDA to ensure all operations are complete
-        torch.cuda.synchronize()
-
-        try:
-            # Clear T3 model caches explicitly before moving to CPU
-            # These caches hold GPU tensors that won't be freed by .cpu()
-            if hasattr(tts_model.t3, '_speech_pos_embedding_cache'):
-                del tts_model.t3._speech_pos_embedding_cache
-            if hasattr(tts_model.t3, '_speech_embedding_cache'):
-                del tts_model.t3._speech_embedding_cache
-            if hasattr(tts_model.t3, 'backend_cache'):
-                del tts_model.t3.backend_cache
-            if hasattr(tts_model.t3, 'backend_cache_params'):
-                del tts_model.t3.backend_cache_params
-            if hasattr(tts_model.t3, 'cudagraph_wrapper'):
-                del tts_model.t3.cudagraph_wrapper
-            if hasattr(tts_model.t3, 'patched_model'):
-                del tts_model.t3.patched_model
-
-            # Move model components to CPU to release GPU memory
-            # ChatterboxTTS is not a PyTorch module, so we need to move each component
-            tts_model.t3.cpu()
-            tts_model.s3gen.cpu()
-            tts_model.ve.cpu()
-            if tts_model.conds is not None:
-                tts_model.conds.to('cpu')
-
-            # Clear any model-specific caches if available
-            if hasattr(tts_model, 'clear_cache'):
-                tts_model.clear_cache()
-        except Exception as e:
-            logger.warning(f"Error moving model to CPU: {e}")
-
-        del tts_model
+        # Cleanup intermediate results only (NOT the singleton model)
+        logger.info("Cleaning up intermediate audio data (keeping singleton)")
         del combined_audio
         gc.collect()
-
-        # Comprehensive CUDA cleanup
         torch.cuda.empty_cache()
-        torch.cuda.empty_cache()  # Call twice for fragmentation
-        torch.cuda.ipc_collect()  # Clean up inter-process shared memory
-        torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
-        torch.cuda.reset_accumulated_memory_stats()  # Reset accumulated stats
 
-        logger.info(f"GPU memory after cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        logger.info(f"GPU memory after cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         # Clean up temporary files
         if temp_wav_file and os.path.exists(temp_wav_file):
@@ -877,44 +855,10 @@ def convert_to_audio_task(file_id):
 
         # Cleanup on error
         try:
-            logger.info(f"GPU memory before error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+            logger.info(f"GPU memory before error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-            # Synchronize CUDA to ensure all operations are complete
-            torch.cuda.synchronize()
-
-            if 'tts_model' in locals():
-                # Move model components to CPU before deletion to ensure GPU memory is released
-                try:
-                    # Clear T3 model caches explicitly before moving to CPU
-                    # These caches hold GPU tensors that won't be freed by .cpu()
-                    if hasattr(tts_model.t3, '_speech_pos_embedding_cache'):
-                        del tts_model.t3._speech_pos_embedding_cache
-                    if hasattr(tts_model.t3, '_speech_embedding_cache'):
-                        del tts_model.t3._speech_embedding_cache
-                    if hasattr(tts_model.t3, 'backend_cache'):
-                        del tts_model.t3.backend_cache
-                    if hasattr(tts_model.t3, 'backend_cache_params'):
-                        del tts_model.t3.backend_cache_params
-                    if hasattr(tts_model.t3, 'cudagraph_wrapper'):
-                        del tts_model.t3.cudagraph_wrapper
-                    if hasattr(tts_model.t3, 'patched_model'):
-                        del tts_model.t3.patched_model
-
-                    # ChatterboxTTS is not a PyTorch module, so we need to move each component
-                    tts_model.t3.cpu()
-                    tts_model.s3gen.cpu()
-                    tts_model.ve.cpu()
-                    if tts_model.conds is not None:
-                        tts_model.conds.to('cpu')
-
-                    if hasattr(tts_model, 'clear_cache'):
-                        tts_model.clear_cache()
-                except Exception as cleanup_err:
-                    logger.warning(f"Error moving model to CPU during error cleanup: {cleanup_err}")
-
-                del tts_model
-
-            # Clean up any other GPU tensors and intermediate objects
+            # Clean up intermediate results only (keep singleton tts_model)
+            # NO cleanup of tts_model - it's a singleton
             if 'combined_audio' in locals():
                 del combined_audio
             if 'wavs' in locals():
@@ -929,15 +873,9 @@ def convert_to_audio_task(file_id):
                 del audio_data
 
             gc.collect()
-
-            # Comprehensive CUDA cleanup
             torch.cuda.empty_cache()
-            torch.cuda.empty_cache()  # Call twice for fragmentation
-            torch.cuda.ipc_collect()  # Clean up inter-process shared memory
-            torch.cuda.reset_peak_memory_stats()  # Reset peak memory stats
-            torch.cuda.reset_accumulated_memory_stats()  # Reset accumulated stats
 
-            logger.info(f"GPU memory after error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+            logger.info(f"GPU memory after error cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         except Exception as cleanup_err:
             logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
