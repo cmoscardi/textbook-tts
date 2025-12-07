@@ -443,6 +443,103 @@ def clean_markdown_for_tts(text: str) -> str:
     return text
 
 
+# Progress monitoring helper functions for tqdm output parsing
+def _parse_tqdm_line(line):
+    """Parse tqdm progress line and extract percentage and description
+
+    Args:
+        line: String like "Recognizing Text:  99%|#########9| 852/857 [01:50<00:00, 27.30it/s]"
+
+    Returns:
+        tuple: (description, percent, current, total) or None if not a tqdm line
+    """
+    import re
+
+    # Match tqdm format: "Description: XX%|bar| current/total [...]"
+    # Also handle carriage returns (\r or ^M)
+    line = line.strip().replace('\r', '').replace('^M', '')
+
+    # Pattern: capture description, percentage, current/total
+    pattern = r'^(.+?):\s+(\d+)%\|.+?\|\s+(\d+)/(\d+)'
+    match = re.match(pattern, line)
+
+    if match:
+        description = match.group(1).strip()
+        percent = int(match.group(2))
+        current = int(match.group(3))
+        total = int(match.group(4))
+        return (description, percent, current, total)
+
+    return None
+
+
+def _map_stage_to_progress(stage_name, stage_percent):
+    """Map marker-pdf stage and its percent to overall progress
+
+    Args:
+        stage_name: Name of the tqdm stage (e.g., "Recognizing Text")
+        stage_percent: Progress within that stage (0-100)
+
+    Returns:
+        int: Overall progress percentage (15-80)
+    """
+    # Define stage ranges
+    stage_ranges = {
+        'Recognizing Layout': (15, 20),
+        'Running OCR Error Detection': (20, 25),
+        'Detecting bboxes': (25, 30),  # First occurrence
+        'Recognizing Text': (30, 75),  # Main work - 45% range
+    }
+
+    # Get range for this stage
+    if stage_name in stage_ranges:
+        start, end = stage_ranges[stage_name]
+        # Map stage percent (0-100) to overall range
+        overall_progress = start + (end - start) * (stage_percent / 100)
+        return int(overall_progress)
+
+    # Unknown stage - return midpoint or last known progress
+    return None
+
+
+def _monitor_tqdm_output(stderr_reader, parsing_id, stop_event):
+    """Background thread that monitors stderr and updates progress
+
+    Args:
+        stderr_reader: io.TextIOWrapper reading from captured stderr
+        parsing_id: Database record ID
+        stop_event: Threading event to signal completion
+    """
+    last_progress = 15
+    current_stage = None
+
+    while not stop_event.is_set():
+        try:
+            line = stderr_reader.readline()
+            if not line:
+                # EOF or no data
+                time.sleep(0.1)
+                continue
+
+            # Parse tqdm line
+            parsed = _parse_tqdm_line(line)
+            if parsed:
+                description, percent, current, total = parsed
+
+                # Map to overall progress
+                overall_progress = _map_stage_to_progress(description, percent)
+
+                if overall_progress and overall_progress > last_progress:
+                    logger.info(f"Progress update: {description} {percent}% -> overall {overall_progress}%")
+                    update_parsing_progress(parsing_id, overall_progress)
+                    last_progress = overall_progress
+                    current_stage = description
+
+        except Exception as e:
+            logger.warning(f"Error parsing tqdm output: {e}")
+            continue
+
+
 # Storage helper functions
 def upload_audio_file(file_path: str, file_data: bytes, user_id: str, content_type: str = "audio/mpeg"):
     """Upload audio file to Supabase storage with correct owner"""
@@ -541,7 +638,7 @@ def parse_pdf_task(file_id):
             return "no cuda device -- dev mode"
 
         logger.info("CUDA device available, proceeding with parsing")
-        update_parsing_progress(parsing_id, 10, "running")
+        update_parsing_progress(parsing_id, 5, "running")
 
         # Clear GPU memory at task start to ensure maximum available memory
         logger.info(f"GPU memory before clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
@@ -566,7 +663,7 @@ def parse_pdf_task(file_id):
             f.write(response.content)
         logger.info(f"Downloaded PDF to: {temp_file}")
 
-        update_parsing_progress(parsing_id, 20)
+        update_parsing_progress(parsing_id, 10)
 
         # Use singleton PDF converter
         logger.info("Using singleton PDF converter (no reload)")
@@ -575,13 +672,42 @@ def parse_pdf_task(file_id):
             logger.warning("Singleton not initialized, loading on-demand (dev mode)")
             initialize_parser_models()
 
-        update_parsing_progress(parsing_id, 25)
+        update_parsing_progress(parsing_id, 15)
 
-        logger.info("Starting PDF conversion with singleton model")
-        res = pdf_converter(temp_file)
-        text, _, images = text_from_rendered(res)
+        logger.info("Starting PDF conversion with tqdm progress monitoring")
+
+        # Create a pipe to capture stderr
+        stderr_pipe_read, stderr_pipe_write = os.pipe()
+
+        # Thread to monitor stderr
+        stop_event = threading.Event()
+        stderr_reader = os.fdopen(stderr_pipe_read, 'r')
+        monitor_thread = threading.Thread(
+            target=_monitor_tqdm_output,
+            args=(stderr_reader, parsing_id, stop_event),
+            daemon=True
+        )
+        monitor_thread.start()
+
+        # Temporarily redirect stderr to our pipe
+        old_stderr = sys.stderr
+        try:
+            sys.stderr = os.fdopen(stderr_pipe_write, 'w')
+
+            # Run conversion with stderr redirected
+            res = pdf_converter(temp_file)
+            text, _, images = text_from_rendered(res)
+
+        finally:
+            # Restore stderr
+            sys.stderr = old_stderr
+
+            # Stop monitoring thread
+            stop_event.set()
+            monitor_thread.join(timeout=2)
+
         logger.info(f"PDF conversion complete, extracted {len(text)} characters")
-        update_parsing_progress(parsing_id, 40)
+        update_parsing_progress(parsing_id, 80)
 
         # Cleanup intermediate results only (NOT the singleton model)
         logger.info("Cleaning up intermediate conversion results (keeping singleton)")
@@ -592,7 +718,7 @@ def parse_pdf_task(file_id):
         gc.collect()
         torch.cuda.empty_cache()
         logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        update_parsing_progress(parsing_id, 65)
+        update_parsing_progress(parsing_id, 85)
 
         # Store original raw markdown
         raw_markdown = text
@@ -602,7 +728,7 @@ def parse_pdf_task(file_id):
         logger.info("Cleaning markdown for TTS")
         cleaned_text = clean_markdown_for_tts(text)
         logger.info(f"Cleaned text for TTS ({len(cleaned_text)} characters)")
-        update_parsing_progress(parsing_id, 75)
+        update_parsing_progress(parsing_id, 90)
 
         # Text preprocessing - split into sentences
         import re
@@ -611,7 +737,7 @@ def parse_pdf_task(file_id):
 
         # Save the parsed text (cleaned version)
         parsed_text = cleaned_text
-        update_parsing_progress(parsing_id, 90)
+        update_parsing_progress(parsing_id, 95)
 
         # Save to database (both raw markdown and cleaned text)
         logger.info(f"Saving parsed text and raw markdown to database")
