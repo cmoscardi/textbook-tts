@@ -787,8 +787,20 @@ def convert_to_audio_task(file_id):
         temp_mp3_file = f"/tmp/audio_{task_id}.mp3"
         logger.info(f"Converting WAV to MP3: {temp_mp3_file}")
         audio_segment = AudioSegment.from_wav(temp_wav_file)
-        audio_segment.export(temp_mp3_file, format="mp3", bitrate="192k")
+        audio_segment.export(temp_mp3_file, format="mp3", parameters=["-q:a", "2"])
         del audio_segment  # Free memory after export
+
+        # Check file size - Supabase free plan limit is 50MB
+        file_size_bytes = os.path.getsize(temp_mp3_file)
+        file_size_mb = file_size_bytes / (1024 * 1024)
+        logger.info(f"MP3 file size: {file_size_mb:.2f} MB")
+
+        if file_size_mb > 50:
+            error_msg = f"MP3 file size ({file_size_mb:.2f} MB) exceeds Supabase free plan limit of 50 MB"
+            logger.error(error_msg)
+            if conversion_id:
+                finalize_conversion(conversion_id, "", "failed")
+            raise Exception(error_msg)
 
         update_conversion_progress(conversion_id, 85)
 

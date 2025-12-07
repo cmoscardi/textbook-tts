@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     ffmpeg \
     curl \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -35,9 +36,9 @@ RUN pip install --no-cache-dir \
 # Copy application code
 COPY api.py ml_worker.py ./
 
-# Copy production startup script
-COPY run.prod.sh ./
-RUN chmod +x run.prod.sh
+# Copy production startup scripts
+COPY run.prod.sh run-api.prod.sh run-parser.prod.sh run-converter.prod.sh ./
+RUN chmod +x run.prod.sh run-api.prod.sh run-parser.prod.sh run-converter.prod.sh
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

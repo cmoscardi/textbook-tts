@@ -1,19 +1,13 @@
 version: '3.8'
 
 services:
-  ml-service:
+  ml-api:
     build:
       context: ./ml-service
       dockerfile: Dockerfile.prod
-    container_name: ml-service-prod
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # PyTorch GPU memory optimization
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    container_name: ml-api-prod
+    # No GPU needed for API
     volumes:
-      # Persistent cache for models (read-only in production)
       - ./hf-cache:/root/.cache/huggingface
       - ./dl-cache:/root/.cache/datalab
     working_dir: /app
@@ -22,6 +16,9 @@ services:
       - "8001:8001"
     env_file:
       - .env.production
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=none
+    command: ./run-api.prod.sh
     networks:
       - ml_network
     healthcheck:
@@ -29,7 +26,38 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 30s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  parser:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.prod
+    container_name: parser-prod
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0  # GPU 0 on main host
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - WORKER_TYPE=parser
+    volumes:
+      - ./hf-cache:/root/.cache/huggingface
+      - ./dl-cache:/root/.cache/datalab
+    working_dir: /app
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    command: ./run-parser.prod.sh
+    networks:
+      - ml_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; exit(0 if torch.cuda.is_available() else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     deploy:
       resources:
         limits:
@@ -37,16 +65,19 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['0']
               capabilities: [gpu]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq-prod
     restart: unless-stopped
     ports:
-      - "5672:5672"      # AMQP port (consider not exposing publicly)
-      - "15672:15672"    # Management UI (use reverse proxy with auth)
+      - "10.8.0.10:5672:5672"   # Bind AMQP to tun0 only (accessible from remote host)
+      - "127.0.0.1:15672:15672" # Management UI local only
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
