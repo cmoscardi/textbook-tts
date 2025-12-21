@@ -16,7 +16,7 @@ done
 echo "RabbitMQ is available"
 
 # Start Celery worker
-exec celery -A ml_worker worker \
+exec celery -A supertonic_worker worker \
     -c 1 \
     --pool=solo \
     --queues=convert_queue \

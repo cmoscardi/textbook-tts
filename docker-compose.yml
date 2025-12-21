@@ -64,13 +64,10 @@ services:
   converter:
     build:
       context: ./ml-service
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.supertonic
     container_name: converter
-    runtime: ${DOCKER_RUNTIME:-runc}
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-none}  # Set by start.sh
       - WORKER_TYPE=converter
-      - CUDA_VISIBLE_DEVICES=0  # Always appears as device 0 inside container
     volumes:
       - ./ml-service:/app
       - ./hf-cache:/root/.cache/huggingface

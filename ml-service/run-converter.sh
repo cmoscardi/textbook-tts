@@ -14,7 +14,7 @@ echo "========================================="
 watchmedo auto-restart \
     --directory=$SCRIPT_DIR \
     --pattern='*.py' \
-    -- celery -A ml_worker worker \
+    -- celery -A supertonic_worker worker \
     -c 1 \
     --pool=solo \
     --queues=convert_queue \

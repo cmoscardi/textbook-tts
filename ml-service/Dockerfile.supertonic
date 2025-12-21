@@ -1,0 +1,26 @@
+FROM pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
+
+# Install cuDNN runtime libraries and git
+RUN apt-get update && \
+    apt-get install -y libcudnn9-cuda-12 git git-lfs && \
+    git lfs install && \
+    ldconfig && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    postgresql-client \
+    libpq-dev \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /supertonic
+RUN git clone https://github.com/cmoscardi/supertonic.git .
+RUN git clone https://huggingface.co/Supertone/supertonic assets
+WORKDIR /supertonic/py
+RUN pip install -r requirements.txt
+RUN pip install pydub
+RUN pip install watchdog supabase celery sqlalchemy psycopg2 pydantic python-multipart
+
+RUN apt-get update && apt-get install -y netcat-openbsd && rm -rf /var/lib/apt/lists/*

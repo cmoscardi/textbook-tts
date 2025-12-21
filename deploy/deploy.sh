@@ -18,9 +18,21 @@ NC='\033[0m' # No Color
 
 # Multi-host configuration
 REMOTE_USER="christian"
-REMOTE_HOST="192.168.1.15"
-REMOTE_DIR="~/textbook-tts"
-MAIN_HOST_TUN0="10.8.0.10"
+REMOTE_HOST="loc"
+REMOTE_DIR="~/textbook-tts-worker"
+
+# Detect tun0 IP address dynamically
+#MAIN_HOST_TUN0=$(ip -4 addr show tun0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+MAIN_HOST_TUN0=rabbitmq-prod
+
+if [ -z "$MAIN_HOST_TUN0" ]; then
+    echo -e "${RED}Error: Could not detect tun0 interface IP address!${NC}"
+    echo "Make sure the tun0 interface is up and configured."
+    exit 1
+fi
+
+echo "Detected tun0 IP: $MAIN_HOST_TUN0"
+export MAIN_HOST_TUN0
 
 # Configuration
 COMPOSE_FILE="docker-compose.prod.yml"
@@ -79,14 +91,17 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 echo "All required Supabase environment variables are set."
 
-echo -e "${GREEN}Step 3: Running Supabase database migrations...${NC}"
+echo -e "${GREEN}Step 3: Creating shared Docker network...${NC}"
+docker network create ml_network || true
+
+echo -e "${GREEN}Step 4: Running Supabase database migrations...${NC}"
 npx supabase db push --db-url "$DATABASE_URL" --password "$POSTGRES_PASSWORD" || {
     echo -e "${RED}Error: Database migration failed!${NC}"
     exit 1
 }
 echo -e "${GREEN}Database migrations completed successfully.${NC}"
 
-echo -e "${GREEN}Step 4: Deploying Supabase edge functions...${NC}"
+echo -e "${GREEN}Step 5: Deploying Supabase edge functions...${NC}"
 
 # Link to Supabase project
 echo "Linking to Supabase project: $SUPABASE_PROJECT_REF"
@@ -158,10 +173,10 @@ npx supabase secrets set \
 }
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
-echo -e "${GREEN}Step 5: Building Docker images for Main Host...${NC}"
+echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
 docker compose -f "$COMPOSE_FILE" build ml-api parser
 
-echo -e "${GREEN}Step 6: Deploying to Main Host...${NC}"
+echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
 echo "Starting RabbitMQ..."
 docker compose -f "$COMPOSE_FILE" up -d rabbitmq
 
@@ -241,7 +256,7 @@ if [ "$FINAL_HEALTH" != "healthy" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}Step 7: Deploying to Remote Host...${NC}"
+echo -e "${GREEN}Step 8: Deploying to Remote Host...${NC}"
 echo "Creating directories on remote host..."
 ssh ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/ml-service ${REMOTE_DIR}/hf-cache ${REMOTE_DIR}/dl-cache"
 
@@ -254,7 +269,13 @@ rsync -avz --progress \
     --exclude '.git'
 
 rsync -avz ${ENV_FILE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/
-rsync -avz ${REMOTE_COMPOSE_FILE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/
+
+# Create temporary remote compose file with updated tun0 IP
+echo "Templating docker-compose.remote.yml with detected tun0 IP: ${MAIN_HOST_TUN0}"
+TEMP_REMOTE_COMPOSE=$(mktemp)
+sed "s/__MAIN_HOST_TUN0__/${MAIN_HOST_TUN0}/" ${REMOTE_COMPOSE_FILE} > ${TEMP_REMOTE_COMPOSE}
+rsync -avz ${TEMP_REMOTE_COMPOSE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/${REMOTE_COMPOSE_FILE}
+rm ${TEMP_REMOTE_COMPOSE}
 
 echo "Building and starting converter on remote host..."
 ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build"

@@ -6,10 +6,8 @@ import logging
 import time
 import os
 from typing import Annotated
-import torch
 
-from ml_worker import app as celery_app
-from ml_worker import parse_pdf_task, convert_to_audio_task
+from task_client import send_parse_task, send_convert_task
 
 # Configure logging
 logging.basicConfig(
@@ -122,7 +120,7 @@ def parse(request: ParseRequest, auth: RequireAuth):
     logger.info(f"Received parse request for file_id: {request.file_id}")
 
     try:
-        fut = parse_pdf_task.delay(str(request.file_id))
+        fut = send_parse_task(str(request.file_id))
         logger.info(f"Created parsing task with ID: {fut.id} for file_id: {request.file_id}")
         return {"id": fut.id, "task_type": "parse"}
     except Exception as e:
@@ -149,7 +147,7 @@ def convert(request: ConvertRequest, auth: RequireAuth):
     logger.info(f"Received convert request for file_id: {request.file_id}")
 
     try:
-        fut = convert_to_audio_task.delay(str(request.file_id))
+        fut = send_convert_task(str(request.file_id))
         logger.info(f"Created conversion task with ID: {fut.id} for file_id: {request.file_id}")
         return {"id": fut.id, "task_type": "convert"}
     except Exception as e:
