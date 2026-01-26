@@ -12,12 +12,15 @@ export default function Files() {
   const [conversions, setConversions] = useState({}); // file_id -> conversion data
   const [parsings, setParsings] = useState({}); // file_id -> parsing data
   const [audioFiles, setAudioFiles] = useState({}); // file_id -> signed URL cache
+  const [usage, setUsage] = useState(null);
+  const [profile, setProfile] = useState(null);
 
   useEffect(() => {
     if (session?.user) {
       fetchFiles();
       fetchConversions();
       fetchParsings();
+      fetchUsageData();
     }
   }, [session]);
 
@@ -124,6 +127,35 @@ export default function Files() {
     await fetchFiles();
     await fetchConversions();
     await fetchParsings();
+  };
+
+  const fetchUsageData = async () => {
+    try {
+      // Fetch user profile
+      const { data: profileData, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('subscription_tier')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (profileError) {
+        console.error('Error fetching profile:', profileError);
+      } else {
+        setProfile(profileData);
+      }
+
+      // Fetch usage
+      const { data: usageData, error: usageError } = await supabase
+        .rpc('get_current_usage', { p_user_id: session.user.id });
+
+      if (usageError) {
+        console.error('Error fetching usage:', usageError);
+      } else {
+        setUsage(usageData);
+      }
+    } catch (err) {
+      console.error('Error fetching usage data:', err);
+    }
   };
 
   const handleDownload = async (file) => {
@@ -427,6 +459,27 @@ export default function Files() {
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
           {error}
+        </div>
+      )}
+
+      {/* Upgrade Banner - Show when at limit */}
+      {usage && usage.conversions_used >= usage.conversion_limit && profile?.subscription_tier !== 'pro' && (
+        <div className="mb-6 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg p-6 shadow-lg">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-bold mb-2">Conversion Limit Reached</h3>
+              <p className="text-blue-50">
+                You've used all {usage.conversion_limit} of your {usage.period_type === 'lifetime' ? 'lifetime' : usage.period_type} conversions.
+                Upgrade to Pro for {usage.period_type === 'monthly' ? '50 monthly' : 'more'} conversions!
+              </p>
+            </div>
+            <Link
+              to="/app/billing"
+              className="px-6 py-3 bg-white text-blue-600 rounded-lg font-semibold hover:bg-blue-50 transition-colors text-center whitespace-nowrap"
+            >
+              Upgrade to Pro
+            </Link>
+          </div>
         </div>
       )}
 
