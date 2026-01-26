@@ -110,8 +110,17 @@ def initialize_parser_models():
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
 
+    # Configure batch sizes to minimize VRAM usage
+    config = {
+        "recognition_batch_size": 1,
+        "layout_batch_size": 1,
+        "detection_batch_size": 1,
+        "ocr_error_batch_size": 1
+    }
+
     pdf_converter = PdfConverter(
         artifact_dict=create_model_dict(),
+        config=config,
     )
 
     logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
