@@ -20,6 +20,7 @@ import Files from './pages/Files.jsx'
 import FileViewer from './pages/FileViewer.jsx'
 import ResetPassword from './pages/ResetPassword.jsx'
 import Landing from './pages/Landing.jsx'
+import Billing from './pages/Billing.jsx'
 import Layout from "./Layout.jsx";
 import { SessionProvider } from './lib/SessionContext.jsx';
 
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
       { path: "about", element: <About /> },
       { path: "upload", element: <Navigate to="/app" replace /> },
       { path: "files", element: <Files /> },
+      { path: "billing", element: <Billing /> },
       { path: "view/:fileId", element: <FileViewer /> },
     ]
   },

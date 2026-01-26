@@ -85,6 +85,63 @@ serve(async (req) => {
       )
     }
 
+    // Check usage quota
+    console.log(`Checking conversion quota for user ${user.id}`)
+    const { data: canConvert, error: quotaError } = await supabase
+      .rpc('can_user_convert', { p_user_id: user.id })
+
+    if (quotaError) {
+      console.error('Quota check error:', quotaError)
+      return new Response(
+        JSON.stringify({ error: 'Failed to check usage quota' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
+    if (!canConvert) {
+      // Get current usage for details
+      const { data: usage, error: usageError } = await supabase
+        .rpc('get_current_usage', { p_user_id: user.id })
+
+      console.log(`Conversion limit reached for user ${user.id}. Usage:`, usage)
+
+      return new Response(
+        JSON.stringify({
+          error: 'Conversion limit reached',
+          message: `You've reached your ${usage?.period_type || 'monthly'} conversion limit`,
+          usage: {
+            used: usage?.conversions_used || 0,
+            limit: usage?.conversion_limit || 0,
+            period_type: usage?.period_type,
+            period_end: usage?.period_end
+          }
+        }),
+        {
+          status: 429,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
+    // Increment usage counter (do this BEFORE calling ML service to prevent race conditions)
+    console.log(`Incrementing usage counter for user ${user.id}`)
+    const { error: incrementError } = await supabase
+      .rpc('increment_usage', { p_user_id: user.id })
+
+    if (incrementError) {
+      console.error('Error incrementing usage:', incrementError)
+      return new Response(
+        JSON.stringify({ error: 'Failed to update usage tracking' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
     // Call the ML service with just the file_id
     // The ML service will handle fetching file metadata and generating signed URLs
     const mlServiceHost = Deno.env.get('MLSERVICE_HOST') ?? 'http://localhost:5000'
