@@ -1,17 +1,32 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import { useSession } from "../lib/SessionContext.jsx";
 
 export default function Landing() {
+  const { session, loading } = useSession();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading && session) {
+      navigate('/app', { replace: true });
+    }
+  }, [session, loading, navigate]);
+
+  if (loading) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center px-4">
       <div className="max-w-2xl text-center">
         {/* Main headline */}
         <h1 className="text-5xl md:text-6xl font-bold mb-6">
-          Turn your PDFs into podcasts
+          Turn your reading into audio
         </h1>
 
         {/* Subheadline */}
         <p className="text-xl md:text-2xl text-gray-400 mb-8">
-          Upload a textbook. Get an audiobook. That's it.
+          Upload text. Get audio. That's it.
         </p>
 
         {/* How it works - brief */}
