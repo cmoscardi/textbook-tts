@@ -1,0 +1,25 @@
+## landing page
+- change copy: "turn your texts into audio"
+- if the user is logged in, they should skip the landing page
+
+## overall layout (i think Layout.jsx?)
+- should have a little banner at the top with logo that says textbook-tts or smth
+- logout in top right corner
+
+## main app page (/app)
+- make the upload button bigger and more central
+- add the same cloud icon to the upload button as in the upload tab on the LHS
+- combine /upload and /app into a single page. should always have upload ability
+
+## upload page (/upload)
+- 1 less button press (as soon as user chooses file, the upload starts)
+
+## view page (/app/view)
+- play button should be front and center immediately
+-- to do this, need streaming functionality (can do that)
+-- track progress in stream (if user closes page or whatever)
+- buttons to jump ahead and back
+- highlight where the user is in the reading
+
+## model / algorithm improvements
+- skip obvious junk?
