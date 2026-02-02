@@ -8,15 +8,12 @@ import time
 import uuid
 from collections import namedtuple
 from io import BytesIO
-from chatterbox.tts import ChatterboxTTS
 from celery import Celery
 from celery.signals import task_postrun
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
 import requests
-import torchaudio as ta
 from supabase import create_client, Client
-from pydub import AudioSegment
 import worker_utils as wu
 from worker_utils import (
     get_file_info,
@@ -86,9 +83,8 @@ else:
 # SINGLETON MODEL INITIALIZATION
 # ============================================================================
 
-# Global singleton model instances (initialized at worker startup)
+# Global singleton model instance (initialized at worker startup)
 pdf_converter = None
-tts_model = None
 
 def initialize_parser_models():
     """Initialize PDF parsing models (parser worker only)
@@ -128,32 +124,6 @@ def initialize_parser_models():
     logger.info("This model will be reused for all parse tasks")
     logger.info("=" * 60)
 
-def initialize_converter_models():
-    """Initialize TTS models (converter worker only)
-
-    This loads ChatterboxTTS once at worker startup.
-    The model stays in GPU memory and is reused across all convert tasks.
-    """
-    global tts_model
-
-    if tts_model is not None:
-        logger.info("TTS model already initialized")
-        return
-
-    logger.info("=" * 60)
-    logger.info("INITIALIZING CHATTERBOX TTS SINGLETON")
-    logger.info("=" * 60)
-    logger.info(f"GPU memory before model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-    from chatterbox.tts import ChatterboxTTS
-
-    tts_model = ChatterboxTTS.from_pretrained(device="cuda")
-
-    logger.info(f"GPU memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    logger.info("ChatterboxTTS singleton initialized successfully")
-    logger.info("This model will be reused for all convert tasks")
-    logger.info("=" * 60)
-
 # Worker startup: Initialize models based on WORKER_TYPE environment variable
 worker_type = os.environ.get("WORKER_TYPE")
 
@@ -163,14 +133,6 @@ if worker_type == "parser":
         initialize_parser_models()
     else:
         logger.warning("CUDA not available - parser models will be loaded on-demand (dev mode)")
-
-elif worker_type == "converter":
-    logger.info("Worker type: CONVERTER - Loading TTS models...")
-    if torch.cuda.is_available():
-        initialize_converter_models()
-    else:
-        logger.warning("CUDA not available - TTS models will be loaded on-demand (dev mode)")
-
 else:
     logger.info(f"Worker type: {worker_type or 'NONE'} - No models loaded (API mode)")
 
