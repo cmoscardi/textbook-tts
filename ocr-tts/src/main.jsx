@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 import './index.css'
 import App from './App.jsx'
 import About from './pages/About.jsx'
@@ -23,7 +23,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Files /> },
       { path: "about", element: <About /> },
-      { path: "upload", element: <Upload /> },
+      { path: "upload", element: <Navigate to="/app" replace /> },
       { path: "files", element: <Files /> },
       { path: "view/:fileId", element: <FileViewer /> },
     ]

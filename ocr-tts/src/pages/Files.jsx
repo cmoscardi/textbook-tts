@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 import ConvertButton from '../components/ConvertButton.jsx';
+import UploadSection from '../components/UploadSection.jsx';
 
 export default function Files() {
   const { session } = useSession();
@@ -117,6 +118,13 @@ export default function Files() {
       console.error('Error fetching parsings:', err);
       // Don't set error state here as it's not critical for the main functionality
     }
+  };
+
+  const handleUploadComplete = async () => {
+    // Refresh all data to show the newly uploaded file
+    await fetchFiles();
+    await fetchConversions();
+    await fetchParsings();
   };
 
   const handleDownload = async (file) => {
@@ -392,18 +400,19 @@ export default function Files() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">My Files</h1>
-        <Link
-          to="/app/upload"
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors w-full sm:w-auto text-center"
-        >
-          Upload
-        </Link>
+      {/* Header */}
+      <div className="flex items-center justify-between py-6">
+        <h1 className="text-3xl font-bold text-gray-800">My Files</h1>
       </div>
 
+      {/* Upload Section - Always Visible */}
+      <div className="mb-8">
+        <UploadSection onUploadComplete={handleUploadComplete} />
+      </div>
+
+      {/* Error Display */}
       {error && (
-        <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
           {error}
         </div>
       )}

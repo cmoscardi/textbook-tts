@@ -12,6 +12,7 @@ export default function ConvertButton({
   const [error, setError] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const pollingIntervalRef = useRef(null);
+  const currentJobIdRef = useRef(null);
   const isMountedRef = useRef(true);
 
   // Update conversion when prop changes
@@ -19,12 +20,18 @@ export default function ConvertButton({
     setConversion(existingConversion);
   }, [existingConversion]);
 
-  // Cleanup polling on unmount
+  // Set mounted state and cleanup polling on unmount
   useEffect(() => {
+    isMountedRef.current = true;
+    console.log('[Mount] ConvertButton mounted');
+
     return () => {
+      console.log('[Mount] ConvertButton unmounting');
       isMountedRef.current = false;
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+        currentJobIdRef.current = null;
       }
     };
   }, []);
@@ -36,48 +43,108 @@ export default function ConvertButton({
     }
   }, [conversion]);
 
-  const startPolling = (jobId) => {
-    // Don't start if already polling
-    if (pollingIntervalRef.current) {
+  // Page Visibility API listener - force check when page becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Page became visible - force a status check
+        if (conversion && conversion.job_id &&
+            (conversion.status === 'pending' || conversion.status === 'running')) {
+          console.log('Page visible - forcing conversion status check');
+          checkConversionStatus(conversion.job_id);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [conversion]);
+
+  const checkConversionStatus = async (jobId) => {
+    console.log('[Poll] Checking status for job:', jobId);
+
+    if (!isMountedRef.current) {
+      console.log('[Poll] Component unmounted, skipping');
       return;
     }
 
-    pollingIntervalRef.current = setInterval(async () => {
-      if (!isMountedRef.current) {
-        clearInterval(pollingIntervalRef.current);
+    try {
+      const { data, error } = await supabase
+        .from('file_conversions')
+        .select('*')
+        .eq('job_id', jobId)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Poll] Error checking conversion status:', error);
+        // Don't clear interval on error - keep trying
         return;
       }
 
-      try {
-        const { data, error } = await supabase
-          .from('file_conversions')
-          .select('*')
-          .eq('job_id', jobId)
-          .limit(1)
-          .single();
+      if (data) {
+        console.log('[Poll] Conversion status update:', data.status, data.job_completion + '%');
+        setConversion(data);
 
-        if (error) throw error;
-
-        if (data) {
-          setConversion(data);
-
-          // Stop polling if completed or failed
-          if (data.status === 'completed' || data.status === 'failed') {
+        // Stop polling if completed or failed
+        if (data.status === 'completed' || data.status === 'failed') {
+          console.log('[Poll] Conversion finished, stopping polling');
+          if (pollingIntervalRef.current) {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
+            currentJobIdRef.current = null;
+          }
 
-            if (data.status === 'completed' && onConversionComplete) {
-              onConversionComplete(data);
-            }
+          if (data.status === 'completed' && onConversionComplete) {
+            onConversionComplete(data);
           }
         }
-      } catch (err) {
-        console.error('Error polling conversion status:', err);
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-        setError('Failed to check conversion status');
+      } else {
+        console.log('[Poll] No conversion record found yet for job:', jobId);
+        // Don't clear interval - record might not be created yet
       }
-    }, 3000); // Poll every 3 seconds
+    } catch (err) {
+      console.error('[Poll] Exception polling conversion status:', err);
+      // Don't clear interval - keep trying
+    }
+  };
+
+  const startPolling = (jobId) => {
+    // Defensive check: don't poll with invalid job IDs
+    if (!jobId || jobId === 'pending') {
+      console.warn('Invalid job_id for polling:', jobId);
+      return;
+    }
+
+    // If already set up for this exact job, don't restart
+    if (currentJobIdRef.current === jobId) {
+      console.log('Already polling for job:', jobId);
+      return;
+    }
+
+    // Clear any existing interval for a different job
+    if (pollingIntervalRef.current) {
+      console.log('Clearing existing polling interval for different job');
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+
+    console.log('Starting polling for job:', jobId);
+    currentJobIdRef.current = jobId;
+
+    // Check immediately first
+    checkConversionStatus(jobId);
+
+    // Then poll every 3 seconds
+    const intervalId = setInterval(() => {
+      console.log('[Interval] Firing for job:', jobId);
+      checkConversionStatus(jobId);
+    }, 3000);
+    pollingIntervalRef.current = intervalId;
+    console.log('Polling interval created:', intervalId);
   };
 
   const handleConvert = async () => {
