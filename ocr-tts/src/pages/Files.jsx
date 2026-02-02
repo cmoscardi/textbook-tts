@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
-import ConvertButton from '../components/ConvertButton.jsx';
 import UploadSection from '../components/UploadSection.jsx';
 
 export default function Files() {
@@ -344,7 +343,7 @@ export default function Files() {
           );
         }
       }
-      // No parsing record yet - file needs to be uploaded again with new system
+      // No parsing record yet
       return (
         <div className="flex flex-col gap-1">
           <span className="text-xs text-gray-500">Not parsed</span>
@@ -353,9 +352,9 @@ export default function Files() {
       );
     }
 
-    // File is parsed - show conversion status/button
-    // Show download button if completed, otherwise show ConvertButton
+    // File is parsed - show conversion status
     if (conversion && conversion.status === 'completed') {
+      // Show download button for completed conversions
       return (
         <div className="flex flex-col gap-1">
           <button
@@ -369,25 +368,39 @@ export default function Files() {
           </button>
         </div>
       );
+    } else if (conversion && (conversion.status === 'pending' || conversion.status === 'running')) {
+      // Show conversion progress (static - no polling on this page)
+      return (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <div className="w-16 bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-blue-600 h-2 rounded-full"
+                style={{ width: `${conversion.job_completion}%` }}
+              ></div>
+            </div>
+            <span className="text-xs text-gray-600">{conversion.job_completion}%</span>
+          </div>
+          <span className="text-xs text-blue-600">Converting...</span>
+        </div>
+      );
+    } else if (conversion && conversion.status === 'failed') {
+      // Show failed state
+      return (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-red-600">Conversion failed</span>
+          <span className="text-xs text-gray-500">View file to retry</span>
+        </div>
+      );
     }
 
-    // For all other states (no conversion, pending, running, failed), use ConvertButton
+    // No conversion - user should navigate to FileViewer to start conversion
     return (
-      <ConvertButton
-        fileId={file.file_id}
-        filePath={file.file_path}
-        existingConversion={conversion}
-        onConversionComplete={(data) => {
-          // Update local state when conversion completes
-          setConversions(prev => ({
-            ...prev,
-            [file.file_id]: data
-          }));
-        }}
-      />
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-gray-500">Not converted</span>
+        <span className="text-xs text-gray-400">View file to convert</span>
+      </div>
     );
-
-    return null;
   };
 
   if (loading) {

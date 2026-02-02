@@ -4,7 +4,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
-import ConvertButton from '../components/ConvertButton.jsx';
 
 export default function FileViewer() {
   const { fileId } = useParams();
@@ -19,12 +18,140 @@ export default function FileViewer() {
   const [isAutoConverting, setIsAutoConverting] = useState(false);
   const autoTriggerRef = useRef(false);
   const audioRef = useRef(null);
+  const pollingIntervalRef = useRef(null);
+  const currentJobIdRef = useRef(null);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
     if (session?.user && fileId) {
       fetchFile();
     }
   }, [session, fileId]);
+
+  // Set mounted state and cleanup polling on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    console.log('[Mount] FileViewer mounted');
+
+    return () => {
+      console.log('[Mount] FileViewer unmounting');
+      isMountedRef.current = false;
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+        currentJobIdRef.current = null;
+      }
+    };
+  }, []);
+
+  // Start polling when conversion changes to pending/running
+  useEffect(() => {
+    if (conversion && (conversion.status === 'pending' || conversion.status === 'running')) {
+      startPolling(conversion.job_id);
+    }
+  }, [conversion]);
+
+  // Page Visibility API - force check when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        if (conversion && conversion.job_id &&
+            (conversion.status === 'pending' || conversion.status === 'running')) {
+          console.log('Page visible - forcing conversion status check');
+          checkConversionStatus(conversion.job_id);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [conversion]);
+
+  const checkConversionStatus = async (jobId) => {
+    console.log('[Poll] Checking status for job:', jobId);
+
+    if (!isMountedRef.current) {
+      console.log('[Poll] Component unmounted, skipping');
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('file_conversions')
+        .select('*')
+        .eq('job_id', jobId)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Poll] Error checking conversion status:', error);
+        return;
+      }
+
+      if (data) {
+        console.log('[Poll] Conversion status update:', data.status, data.job_completion + '%');
+        setConversion(data);
+
+        // Stop polling if completed or failed
+        if (data.status === 'completed' || data.status === 'failed') {
+          console.log('[Poll] Conversion finished, stopping polling');
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+            currentJobIdRef.current = null;
+          }
+
+          // Generate audio URL if completed
+          if (data.status === 'completed' && data.file_path) {
+            const { data: urlData, error: urlError } = await supabase.storage
+              .from('files')
+              .createSignedUrl(data.file_path, 3600);
+
+            if (!urlError && urlData?.signedUrl) {
+              setAudioUrl(urlData.signedUrl);
+            }
+          }
+        }
+      } else {
+        console.log('[Poll] No conversion record found yet for job:', jobId);
+      }
+    } catch (err) {
+      console.error('[Poll] Exception polling conversion status:', err);
+    }
+  };
+
+  const startPolling = (jobId) => {
+    if (!jobId || jobId === 'pending') {
+      console.warn('Invalid job_id for polling:', jobId);
+      return;
+    }
+
+    if (currentJobIdRef.current === jobId) {
+      console.log('Already polling for job:', jobId);
+      return;
+    }
+
+    if (pollingIntervalRef.current) {
+      console.log('Clearing existing polling interval for different job');
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+
+    console.log('Starting polling for job:', jobId);
+    currentJobIdRef.current = jobId;
+
+    checkConversionStatus(jobId);
+
+    const intervalId = setInterval(() => {
+      console.log('[Interval] Firing for job:', jobId);
+      checkConversionStatus(jobId);
+    }, 3000);
+    pollingIntervalRef.current = intervalId;
+    console.log('Polling interval created:', intervalId);
+  };
 
   const autoTriggerConversion = async () => {
     // Prevent multiple simultaneous calls
@@ -319,19 +446,6 @@ export default function FileViewer() {
 
       {/* Audio Conversion Section */}
       <div className="mb-6 bg-white shadow rounded-lg p-6">
-        {/* Always render ConvertButton to maintain polling, but hide it when showing custom UI */}
-        <div style={{ display: 'none' }}>
-          <ConvertButton
-            fileId={fileId}
-            filePath={file.file_path}
-            existingConversion={conversion}
-            onConversionComplete={(data) => {
-              setConversion(data);
-              fetchFile(); // Refresh to show audio player
-            }}
-          />
-        </div>
-
         {/* Show audio player if conversion is completed */}
         {audioUrl && conversion?.status === 'completed' ? (
           <>
