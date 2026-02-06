@@ -60,6 +60,7 @@ import torch
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
+from marker.schema import BlockTypes
 
 # CUDA health check at worker startup
 if torch.cuda.is_available():
@@ -313,6 +314,115 @@ def _monitor_tqdm_output(stderr_reader, parsing_id, stop_event):
             continue
 
 
+# Block types that contain readable text for sentence extraction
+_TEXT_BLOCK_TYPES = (
+    BlockTypes.Text,
+    BlockTypes.SectionHeader,
+    BlockTypes.ListItem,
+    BlockTypes.Caption,
+    BlockTypes.Footnote,
+    BlockTypes.TextInlineMath,
+)
+
+
+def extract_pages_and_sentences(document):
+    """Extract page dimensions and sentences with bounding boxes from a marker Document.
+
+    Traverses the Document's page/block/line hierarchy to produce sentence-level
+    data with polygon coordinates from the underlying visual lines.
+
+    Args:
+        document: A marker Document object (from PdfConverter.build_document)
+
+    Returns:
+        list of dicts, one per page:
+        {
+            "page_number": int (0-indexed),
+            "width": float,
+            "height": float,
+            "sentences": [
+                {"text": str, "bbox": [[[x1,y1],[x2,y2],[x3,y3],[x4,y4]], ...]},
+                ...
+            ]
+        }
+    """
+    import re
+    sentence_split = re.compile(r'(?<=[.!?])\s+')
+
+    pages_data = []
+
+    for page_idx, page in enumerate(document.pages):
+        page_info = {
+            "page_number": page_idx,
+            "width": page.polygon.width,
+            "height": page.polygon.height,
+            "sentences": []
+        }
+
+        # Get all text-type blocks on this page
+        text_blocks = page.contained_blocks(document, _TEXT_BLOCK_TYPES)
+
+        for block in text_blocks:
+            # Get lines within this block
+            lines = block.contained_blocks(document, (BlockTypes.Line,))
+            if not lines:
+                continue
+
+            # Collect each line's text and polygon
+            line_texts = []
+            line_polygons = []
+            for line in lines:
+                lt = line.raw_text(document).rstrip('\n')
+                line_texts.append(lt)
+                line_polygons.append(line.polygon.polygon)
+
+            # Build concatenated block text with spaces between lines,
+            # tracking which character index maps to which line
+            block_text = ""
+            char_to_line = []
+            for i, lt in enumerate(line_texts):
+                if i > 0:
+                    block_text += " "
+                    char_to_line.append(i)  # space belongs to next line
+                for _ in lt:
+                    char_to_line.append(i)
+                block_text += lt
+
+            if not block_text.strip():
+                continue
+
+            # Split block text into sentences
+            sentence_spans = []
+            last_end = 0
+            for match in sentence_split.finditer(block_text):
+                sentence_spans.append((last_end, match.start()))
+                last_end = match.end()
+            if last_end < len(block_text):
+                sentence_spans.append((last_end, len(block_text)))
+
+            for start, end in sentence_spans:
+                sentence_text = block_text[start:end].strip()
+                if not sentence_text:
+                    continue
+
+                # Determine which lines this sentence spans
+                spanned_line_indices = set()
+                for char_idx in range(start, min(end, len(char_to_line))):
+                    spanned_line_indices.add(char_to_line[char_idx])
+
+                # Collect the polygons of those lines
+                sentence_polygons = [line_polygons[li] for li in sorted(spanned_line_indices)]
+
+                page_info["sentences"].append({
+                    "text": sentence_text,
+                    "bbox": sentence_polygons
+                })
+
+        pages_data.append(page_info)
+
+    return pages_data
+
+
 @app.task()
 def parse_pdf_task(file_id):
     """Parse PDF and extract text, saving to database"""
@@ -400,7 +510,10 @@ def parse_pdf_task(file_id):
             sys.stderr = os.fdopen(stderr_pipe_write, 'w')
 
             # Run conversion with stderr redirected
-            res = pdf_converter(temp_file)
+            # Split __call__ into build_document + renderer to access Document structure
+            document = pdf_converter.build_document(temp_file)
+            renderer = pdf_converter.resolve_dependencies(pdf_converter.renderer)
+            res = renderer(document)
             text, _, images = text_from_rendered(res)
 
         finally:
@@ -414,15 +527,55 @@ def parse_pdf_task(file_id):
         logger.info(f"PDF conversion complete, extracted {len(text)} characters")
         update_parsing_progress(parsing_id, 80, supabase=supabase)
 
+        # Extract page/sentence/bbox data from the Document structure
+        try:
+            logger.info("Extracting page and sentence structure with bounding boxes")
+            pages_data = extract_pages_and_sentences(document)
+            total_sentences = sum(len(p["sentences"]) for p in pages_data)
+            logger.info(f"Extracted {total_sentences} sentences across {len(pages_data)} pages")
+        except Exception as extract_err:
+            logger.error(f"Failed to extract page/sentence structure: {extract_err}")
+            pages_data = None
+
         # Cleanup intermediate results only (NOT the singleton model)
         logger.info("Cleaning up intermediate conversion results (keeping singleton)")
         del res
+        del document
         if images:
             del images
 
         gc.collect()
         torch.cuda.empty_cache()
         logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+        # Insert page/sentence structure into database
+        if pages_data:
+            try:
+                logger.info("Saving page/sentence structure to database")
+                wu.delete_file_pages(file_id, supabase)  # idempotency
+                global_sequence = 0
+                for page_data in pages_data:
+                    page_id = wu.create_file_page(
+                        file_id=file_id,
+                        page_number=page_data["page_number"],
+                        width=page_data["width"],
+                        height=page_data["height"],
+                        supabase=supabase
+                    )
+                    if page_id and page_data["sentences"]:
+                        sentence_rows = [{
+                            "page_id": page_id,
+                            "file_id": file_id,
+                            "text": s["text"],
+                            "sequence_number": global_sequence + i,
+                            "bbox": s["bbox"]
+                        } for i, s in enumerate(page_data["sentences"])]
+                        wu.create_page_sentences_bulk(sentence_rows, supabase)
+                        global_sequence += len(sentence_rows)
+                logger.info(f"Saved {global_sequence} sentences across {len(pages_data)} pages")
+            except Exception as db_err:
+                logger.error(f"Failed to save page/sentence structure: {db_err}")
+
         update_parsing_progress(parsing_id, 85, supabase=supabase)
 
         # Store original raw markdown
@@ -484,6 +637,8 @@ def parse_pdf_task(file_id):
         try:
             # Clean up intermediate results only (keep singleton)
             # NO cleanup of pdf_converter - it's a singleton
+            if 'document' in locals():
+                del document
             if 'res' in locals():
                 del res
             if 'images' in locals():

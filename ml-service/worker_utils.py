@@ -103,6 +103,59 @@ def update_parsing_progress(parsing_id: str, progress: int, status: str = None, 
         return False
 
 
+def delete_file_pages(file_id: str, supabase):
+    """Delete all file_pages (and cascading page_sentences) for a file.
+
+    Used for idempotent re-parsing so we don't get duplicate rows.
+    """
+    if not supabase:
+        return
+    try:
+        supabase.table("file_pages").delete().eq("file_id", file_id).execute()
+        logger.info(f"Deleted existing pages/sentences for file {file_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete existing pages for file {file_id}: {e}")
+
+
+def create_file_page(file_id: str, page_number: int, width: float, height: float, supabase=None):
+    """Insert a single file_page record.
+
+    Returns:
+        str: The page_id of the created record, or None on failure.
+    """
+    if not supabase:
+        return None
+    try:
+        data = {
+            "file_id": file_id,
+            "page_number": page_number,
+            "width": width,
+            "height": height
+        }
+        result = supabase.table("file_pages").insert(data).execute()
+        return result.data[0]["page_id"]
+    except Exception as e:
+        logger.error(f"Failed to create file page: {e}")
+        return None
+
+
+def create_page_sentences_bulk(sentences: list, supabase=None):
+    """Bulk insert page_sentences records.
+
+    Args:
+        sentences: list of dicts with keys: page_id, file_id, text, sequence_number, bbox
+    """
+    if not supabase or not sentences:
+        return False
+    try:
+        supabase.table("page_sentences").insert(sentences).execute()
+        logger.info(f"Inserted {len(sentences)} sentences")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to bulk insert sentences: {e}")
+        return False
+
+
 def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed", raw_markdown: str = None, supabase=None):
     """Finalize a parsing job and update the files table with parsed text and raw markdown"""
     if not supabase or not parsing_id:
