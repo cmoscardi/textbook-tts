@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -25,6 +25,15 @@ export default function FileViewer() {
   const [pageMarkdowns, setPageMarkdowns] = useState([]);
   const parsingPollingRef = useRef(null);
 
+  // Sentence-by-sentence playback state
+  const [sentences, setSentences] = useState([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentSentenceIdx, setCurrentSentenceIdx] = useState(0);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const sentenceAudioCache = useRef(new Map());
+  const currentAudioRef = useRef(null);
+  const stopRequestedRef = useRef(false);
+
   useEffect(() => {
     if (session?.user && fileId) {
       fetchFile();
@@ -48,6 +57,16 @@ export default function FileViewer() {
         clearInterval(parsingPollingRef.current);
         parsingPollingRef.current = null;
       }
+      // Clean up playback
+      stopRequestedRef.current = true;
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      for (const blobUrl of sentenceAudioCache.current.values()) {
+        URL.revokeObjectURL(blobUrl);
+      }
+      sentenceAudioCache.current.clear();
     };
   }, []);
 
@@ -225,6 +244,17 @@ export default function FileViewer() {
       const texts = await fetchPageMarkdowns();
       setPageMarkdowns(texts);
 
+      // Fetch sentences progressively so Play button appears during parsing
+      const { data: sentenceData } = await supabase
+        .from('page_sentences')
+        .select('sentence_id, text, sequence_number')
+        .eq('file_id', fileId)
+        .order('sequence_number', { ascending: true });
+
+      if (sentenceData && sentenceData.length > 0) {
+        setSentences(sentenceData);
+      }
+
       if (parsingData.status === 'completed') {
         console.log('[Parsing] Parsing completed, re-fetching file');
         // Stop parsing polling
@@ -293,6 +323,96 @@ export default function FileViewer() {
     }, 3000);
   };
 
+  // --- Sentence-by-sentence playback ---
+
+  const synthesizeSentence = useCallback(async (idx) => {
+    if (sentenceAudioCache.current.has(idx)) {
+      return sentenceAudioCache.current.get(idx);
+    }
+
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    if (!currentSession) throw new Error('Not authenticated');
+
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const response = await fetch(`${supabaseUrl}/functions/v1/play-sentence`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentSession.access_token}`,
+        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ text: sentences[idx].text, file_id: fileId }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Synthesis failed: ${errorText}`);
+    }
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    sentenceAudioCache.current.set(idx, blobUrl);
+    return blobUrl;
+  }, [sentences, fileId]);
+
+  const playFromIndex = useCallback(async (startIdx) => {
+    stopRequestedRef.current = false;
+    setIsPlaying(true);
+
+    for (let i = startIdx; i < sentences.length; i++) {
+      if (stopRequestedRef.current) break;
+
+      setCurrentSentenceIdx(i);
+      setIsSynthesizing(true);
+
+      let blobUrl;
+      try {
+        blobUrl = await synthesizeSentence(i);
+      } catch (err) {
+        console.error('Synthesis error:', err);
+        break;
+      }
+
+      if (stopRequestedRef.current) break;
+      setIsSynthesizing(false);
+
+      // Pre-fetch next sentence
+      if (i + 1 < sentences.length) {
+        synthesizeSentence(i + 1).catch(() => {});
+      }
+
+      // Play current sentence
+      const audio = new Audio(blobUrl);
+      currentAudioRef.current = audio;
+
+      await new Promise((resolve) => {
+        audio.addEventListener('ended', resolve);
+        audio.addEventListener('error', resolve);
+        audio.play().catch(resolve);
+      });
+
+      currentAudioRef.current = null;
+      if (stopRequestedRef.current) break;
+    }
+
+    setIsPlaying(false);
+    setIsSynthesizing(false);
+  }, [sentences, synthesizeSentence]);
+
+  const handlePlayPause = useCallback(() => {
+    if (isPlaying) {
+      stopRequestedRef.current = true;
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      setIsPlaying(false);
+      setIsSynthesizing(false);
+    } else {
+      playFromIndex(currentSentenceIdx);
+    }
+  }, [isPlaying, currentSentenceIdx, playFromIndex]);
+
   // --- File fetching ---
 
   const fetchFile = async () => {
@@ -351,6 +471,17 @@ export default function FileViewer() {
         }
       } else {
         setFile(data);
+
+        // Fetch sentences for playback
+        const { data: sentenceData } = await supabase
+          .from('page_sentences')
+          .select('sentence_id, text, sequence_number')
+          .eq('file_id', fileId)
+          .order('sequence_number', { ascending: true });
+
+        if (sentenceData && sentenceData.length > 0) {
+          setSentences(sentenceData);
+        }
       }
 
       // Fetch conversion data (optional - for audio player)
@@ -533,6 +664,32 @@ export default function FileViewer() {
 
             {/* Action buttons */}
             <div className="flex gap-2 ml-4">
+              {/* Play/Stop button for sentence-by-sentence playback */}
+              {sentences.length > 0 && (
+                <button
+                  onClick={handlePlayPause}
+                  className={`px-3 py-2 text-sm text-white rounded transition-colors flex items-center gap-2 ${
+                    isPlaying ? 'bg-red-500 hover:bg-red-600' : 'bg-purple-500 hover:bg-purple-600'
+                  }`}
+                  title={isPlaying ? 'Stop playback' : 'Play sentences'}
+                >
+                  {isSynthesizing && !currentAudioRef.current ? (
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  ) : isPlaying ? (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="5" width="12" height="14" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                  {isPlaying ? 'Stop' : 'Play'}
+                </button>
+              )}
               {displayMarkdown && (
                 <button
                   onClick={handleDownloadMarkdown}
@@ -589,6 +746,14 @@ export default function FileViewer() {
           </div>
         </div>
       </div>
+
+      {/* Sentence playback progress */}
+      {isPlaying && sentences.length > 0 && (
+        <div className="mb-4 text-sm text-gray-600 px-1">
+          Sentence {currentSentenceIdx + 1} of {sentences.length}
+          {isSynthesizing && ' — synthesizing...'}
+        </div>
+      )}
 
       {/* Audio Player Section — only shown when there's an audio player or active conversion */}
       {audioUrl && conversion?.status === 'completed' ? (

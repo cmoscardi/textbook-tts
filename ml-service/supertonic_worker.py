@@ -1,6 +1,7 @@
 import os
 import gc
 import logging
+import base64
 from celery import Celery
 import time
 
@@ -48,6 +49,7 @@ app.conf.update(
     # Task routing configuration
     task_routes={
         'supertonic_converter.convert_to_audio_task': {'queue': 'convert_queue'},
+        'supertonic_worker.synthesize_sentence_task': {'queue': 'synthesize_queue'},
     },
 )
 
@@ -193,3 +195,37 @@ def convert_to_audio_task(file_id):
                 pass
 
         raise e
+
+
+@app.task()
+def synthesize_sentence_task(text):
+    temp_wav_file = None
+    temp_mp3_file = None
+    task_id = synthesize_sentence_task.request.id
+    try:
+        style = load_voice_style(["/supertonic/assets/voice_styles/M2.json"], verbose=False)
+        wav, duration = text_to_speech(text, style, 15, 1.05)
+        w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
+        duration_secs = float(duration[0].item())
+
+        temp_wav_file = f"/tmp/sentence_{task_id}.wav"
+        sf.write(temp_wav_file, w, text_to_speech.sample_rate)
+
+        temp_mp3_file = f"/tmp/sentence_{task_id}.mp3"
+        audio_segment = AudioSegment.from_wav(temp_wav_file)
+        audio_segment.export(temp_mp3_file, format="mp3", parameters=["-q:a", "4"])
+        del audio_segment
+
+        with open(temp_mp3_file, "rb") as f:
+            audio_bytes = f.read()
+
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        logger.info(f"Synthesized sentence ({len(text)} chars, {duration_secs:.2f}s)")
+        return {"audio_b64": audio_b64, "duration": duration_secs}
+
+    finally:
+        if temp_wav_file and os.path.exists(temp_wav_file):
+            os.remove(temp_wav_file)
+        if temp_mp3_file and os.path.exists(temp_mp3_file):
+            os.remove(temp_mp3_file)

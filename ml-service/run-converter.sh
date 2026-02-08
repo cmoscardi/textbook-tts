@@ -7,7 +7,7 @@ echo "========================================="
 echo "Starting CONVERTER worker"
 echo "GPU allocation: Controlled by NVIDIA_VISIBLE_DEVICES env var"
 echo "              (set by start.sh - all/none for dev, specific GPU for prod)"
-echo "Queue: convert_queue"
+echo "Queues: convert_queue, synthesize_queue"
 echo "========================================="
 
 # Start Celery worker for convert_queue with auto-reload
@@ -17,6 +17,6 @@ watchmedo auto-restart \
     -- celery -A supertonic_worker worker \
     -c 1 \
     --pool=solo \
-    --queues=convert_queue \
+    --queues=convert_queue,synthesize_queue \
     --hostname=converter@%h \
     --loglevel=info

@@ -1,13 +1,15 @@
 from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from uuid import UUID
+import base64
 import logging
 import time
 import os
 from typing import Annotated
 
-from task_client import send_parse_task, send_convert_task
+from task_client import send_parse_task, send_convert_task, send_synthesize_task
 
 # Configure logging
 logging.basicConfig(
@@ -100,6 +102,10 @@ class ConvertRequest(BaseModel):
     file_id: UUID = Field(description="The UUID of the file in the database")
 
 
+class SynthesizeRequest(BaseModel):
+    text: str = Field(description="The sentence text to synthesize", max_length=2000)
+
+
 
 
 @app.post("/parse")
@@ -153,3 +159,27 @@ def convert(request: ConvertRequest, auth: RequireAuth):
     except Exception as e:
         logger.error(f"Error creating convert task for file_id {request.file_id}: {str(e)}")
         raise
+
+
+@app.post("/synthesize")
+def synthesize(request: SynthesizeRequest, auth: RequireAuth):
+    logger.info(f"Received synthesize request ({len(request.text)} chars)")
+
+    try:
+        fut = send_synthesize_task(request.text)
+        result = fut.get(timeout=30)
+    except Exception as e:
+        if "TimeoutError" in type(e).__name__ or "TimeLimitExceeded" in type(e).__name__:
+            logger.error(f"Synthesize task timed out: {e}")
+            raise HTTPException(status_code=504, detail="Synthesis timed out")
+        logger.error(f"Synthesize task failed: {e}")
+        raise HTTPException(status_code=500, detail="Synthesis failed")
+
+    audio_bytes = base64.b64decode(result["audio_b64"])
+    duration = result.get("duration", 0)
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={"X-Audio-Duration": str(duration)},
+    )

@@ -24,6 +24,7 @@ client_app.conf.update(
 # Task name constants
 PARSE_PDF_TASK = 'ml_worker.parse_pdf_task'
 CONVERT_TO_AUDIO_TASK = 'supertonic_worker.convert_to_audio_task'
+SYNTHESIZE_SENTENCE_TASK = 'supertonic_worker.synthesize_sentence_task'
 
 def send_parse_task(file_id: str):
     """Send PDF parsing task to parser worker
@@ -55,4 +56,20 @@ def send_convert_task(file_id: str):
         CONVERT_TO_AUDIO_TASK,
         args=[file_id],
         queue='convert_queue'
+    )
+
+def send_synthesize_task(text: str):
+    """Send sentence synthesis task to converter worker
+
+    Args:
+        text: The sentence text to synthesize
+
+    Returns:
+        AsyncResult: Celery task result object with .id and other methods
+    """
+    logger.info(f"Sending synthesize task ({len(text)} chars)")
+    return client_app.send_task(
+        SYNTHESIZE_SENTENCE_TASK,
+        args=[text],
+        queue='synthesize_queue'
     )

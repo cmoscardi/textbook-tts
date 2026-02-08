@@ -4,7 +4,7 @@ set -e
 echo "========================================="
 echo "Starting CONVERTER worker (production)"
 echo "GPU: ${NVIDIA_VISIBLE_DEVICES}"
-echo "Queue: convert_queue"
+echo "Queues: convert_queue, synthesize_queue"
 echo "RabbitMQ Host: ${RABBITMQ_HOST}"
 echo "========================================="
 
@@ -19,7 +19,7 @@ echo "RabbitMQ is available"
 exec celery -A supertonic_worker worker \
     -c 1 \
     --pool=solo \
-    --queues=convert_queue \
+    --queues=convert_queue,synthesize_queue \
     --hostname=converter@%h \
     --loglevel=info \
-    --max-tasks-per-child=1
+    --max-tasks-per-child=50
