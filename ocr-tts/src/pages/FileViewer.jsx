@@ -14,9 +14,6 @@ export default function FileViewer() {
   const [audioUrl, setAudioUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [autoTriggeredConversion, setAutoTriggeredConversion] = useState(false);
-  const [isAutoConverting, setIsAutoConverting] = useState(false);
-  const autoTriggerRef = useRef(false);
   const audioRef = useRef(null);
   const pollingIntervalRef = useRef(null);
   const currentJobIdRef = useRef(null);
@@ -153,79 +150,17 @@ export default function FileViewer() {
     console.log('Polling interval created:', intervalId);
   };
 
-  const autoTriggerConversion = async () => {
-    // Prevent multiple simultaneous calls
-    if (autoTriggerRef.current) {
-      console.log('Auto-trigger already in progress, skipping');
-      return;
-    }
+  const handleConvert = async () => {
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    if (!currentSession) return;
 
-    try {
-      autoTriggerRef.current = true;
-      console.log('Auto-triggering conversion for file:', fileId);
-      setIsAutoConverting(true);
+    const { data, error } = await supabase.functions.invoke('convert-file', {
+      body: { file_id: fileId },
+      headers: { Authorization: `Bearer ${currentSession.access_token}` }
+    });
+    if (error) { console.error('Conversion failed:', error); return; }
 
-      // Get the session token
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-
-      if (!currentSession) {
-        console.error('Not authenticated for auto-conversion');
-        setIsAutoConverting(false);
-        autoTriggerRef.current = false;
-        return;
-      }
-
-      // Call the convert-file Edge Function
-      const { data, error } = await supabase.functions.invoke('convert-file', {
-        body: { file_id: fileId },
-        headers: {
-          Authorization: `Bearer ${currentSession.access_token}`
-        }
-      });
-
-      if (error) {
-        console.error('Auto-conversion failed:', error);
-        setIsAutoConverting(false);
-        autoTriggerRef.current = false;
-        return;
-      }
-
-      console.log('Auto-conversion started successfully:', data);
-
-      // Poll for the conversion record to be created in the database
-      let attempts = 0;
-      const maxAttempts = 10;
-      const pollForConversion = async () => {
-        const { data: conversionData, error: conversionError } = await supabase
-          .from('file_conversions')
-          .select('*')
-          .eq('job_id', data.id)
-          .limit(1)
-          .maybeSingle();
-
-        if (!conversionError && conversionData) {
-          console.log('Conversion record found:', conversionData);
-          setConversion(conversionData);
-          setIsAutoConverting(false);
-          return true;
-        }
-
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(pollForConversion, 500);
-        } else {
-          console.error('Conversion record not found after', maxAttempts, 'attempts');
-          setIsAutoConverting(false);
-          autoTriggerRef.current = false;
-        }
-      };
-
-      pollForConversion();
-    } catch (error) {
-      console.error('Error auto-triggering conversion:', error);
-      setIsAutoConverting(false);
-      autoTriggerRef.current = false;
-    }
+    setConversion({ job_id: data.id, status: 'pending', job_completion: 0 });
   };
 
   const fetchFile = async () => {
@@ -280,10 +215,6 @@ export default function FileViewer() {
             setAudioUrl(urlData.signedUrl);
           }
         }
-      } else if (!autoTriggeredConversion) {
-        // No conversion exists - auto-trigger it
-        setAutoTriggeredConversion(true);
-        autoTriggerConversion();
       }
 
     } catch (err) {
@@ -482,7 +413,7 @@ export default function FileViewer() {
                 Your browser does not support the audio element.
               </audio>
             </>
-          ) : isAutoConverting || (conversion && (conversion.status === 'pending' || conversion.status === 'running')) ? (
+          ) : conversion && (conversion.status === 'pending' || conversion.status === 'running') ? (
             /* Show conversion progress */
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-12 h-12 bg-blue-100 rounded-full">
@@ -491,36 +422,21 @@ export default function FileViewer() {
                 </svg>
               </div>
               <div className="flex-1">
-                {isAutoConverting ? (
-                  <>
-                    <h2 className="text-lg font-semibold text-gray-800 mb-2">Starting Conversion...</h2>
-                    <div className="flex items-center gap-2">
-                      <svg className="animate-spin h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      <span className="text-sm text-gray-600">Initializing conversion service...</span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <h2 className="text-lg font-semibold text-gray-800 mb-2">Converting to Audio</h2>
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 bg-gray-200 rounded-full h-3">
-                        <div
-                          className="bg-blue-600 h-3 rounded-full transition-all duration-500"
-                          style={{ width: `${conversion?.job_completion || 0}%` }}
-                        ></div>
-                      </div>
-                      <span className="text-sm font-medium text-gray-700 min-w-[3rem]">
-                        {conversion?.job_completion || 0}%
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-2">
-                      {conversion?.status === 'pending' ? 'Preparing to convert...' : 'Converting your document to audio...'}
-                    </p>
-                  </>
-                )}
+                <h2 className="text-lg font-semibold text-gray-800 mb-2">Converting to Audio</h2>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 bg-gray-200 rounded-full h-3">
+                    <div
+                      className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                      style={{ width: `${conversion?.job_completion || 0}%` }}
+                    ></div>
+                  </div>
+                  <span className="text-sm font-medium text-gray-700 min-w-[3rem]">
+                    {conversion?.job_completion || 0}%
+                  </span>
+                </div>
+                <p className="text-sm text-gray-600 mt-2">
+                  {conversion?.status === 'pending' ? 'Preparing to convert...' : 'Converting your document to audio...'}
+                </p>
               </div>
             </div>
           ) : (
@@ -534,6 +450,15 @@ export default function FileViewer() {
               <div className="flex-1">
                 <h2 className="text-lg font-semibold text-gray-800 mb-1">Convert to Audio</h2>
                 <p className="text-sm text-gray-600 mb-3">Generate an audio version of this document</p>
+                <button
+                  onClick={handleConvert}
+                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                  </svg>
+                  Convert to MP3
+                </button>
               </div>
             </div>
           )}
