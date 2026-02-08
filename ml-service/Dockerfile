@@ -25,6 +25,7 @@ RUN pip install python-doctr \
     fastapi uvicorn[standard] python-multipart pydantic \
     celery sqlalchemy psycopg2 \
     marker-pdf \
+    pypdf \
     jupyter watchdog \
     supabase \
     pydub

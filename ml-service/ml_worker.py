@@ -2,17 +2,11 @@
 import gc
 import logging
 import os
-import sys
-import threading
+import re
 import time
-import uuid
-from collections import namedtuple
-from io import BytesIO
 from celery import Celery
-from celery.signals import task_postrun
-from doctr.io import DocumentFile
-from doctr.models import ocr_predictor
 import requests
+from pypdf import PdfReader, PdfWriter
 from supabase import create_client, Client
 import worker_utils as wu
 from worker_utils import (
@@ -20,8 +14,6 @@ from worker_utils import (
     create_parsing_record,
     update_parsing_progress,
     finalize_parsing,
-    upload_audio_file,
-    generate_output_file_path
 )
 
 
@@ -149,8 +141,6 @@ def clean_markdown_for_tts(text: str) -> str:
     Returns:
         Cleaned text suitable for TTS
     """
-    import re
-
     if not text:
         return ""
 
@@ -217,103 +207,6 @@ def clean_markdown_for_tts(text: str) -> str:
     return text
 
 
-# Progress monitoring helper functions for tqdm output parsing
-def _parse_tqdm_line(line):
-    """Parse tqdm progress line and extract percentage and description
-
-    Args:
-        line: String like "Recognizing Text:  99%|#########9| 852/857 [01:50<00:00, 27.30it/s]"
-
-    Returns:
-        tuple: (description, percent, current, total) or None if not a tqdm line
-    """
-    import re
-
-    # Match tqdm format: "Description: XX%|bar| current/total [...]"
-    # Also handle carriage returns (\r or ^M)
-    line = line.strip().replace('\r', '').replace('^M', '')
-
-    # Pattern: capture description, percentage, current/total
-    pattern = r'^(.+?):\s+(\d+)%\|.+?\|\s+(\d+)/(\d+)'
-    match = re.match(pattern, line)
-
-    if match:
-        description = match.group(1).strip()
-        percent = int(match.group(2))
-        current = int(match.group(3))
-        total = int(match.group(4))
-        return (description, percent, current, total)
-
-    return None
-
-
-def _map_stage_to_progress(stage_name, stage_percent):
-    """Map marker-pdf stage and its percent to overall progress
-
-    Args:
-        stage_name: Name of the tqdm stage (e.g., "Recognizing Text")
-        stage_percent: Progress within that stage (0-100)
-
-    Returns:
-        int: Overall progress percentage (15-80)
-    """
-    # Define stage ranges
-    stage_ranges = {
-        'Recognizing Layout': (15, 20),
-        'Running OCR Error Detection': (20, 25),
-        'Detecting bboxes': (25, 30),  # First occurrence
-        'Recognizing Text': (30, 75),  # Main work - 45% range
-    }
-
-    # Get range for this stage
-    if stage_name in stage_ranges:
-        start, end = stage_ranges[stage_name]
-        # Map stage percent (0-100) to overall range
-        overall_progress = start + (end - start) * (stage_percent / 100)
-        return int(overall_progress)
-
-    # Unknown stage - return midpoint or last known progress
-    return None
-
-
-def _monitor_tqdm_output(stderr_reader, parsing_id, stop_event):
-    """Background thread that monitors stderr and updates progress
-
-    Args:
-        stderr_reader: io.TextIOWrapper reading from captured stderr
-        parsing_id: Database record ID
-        stop_event: Threading event to signal completion
-    """
-    last_progress = 15
-    current_stage = None
-
-    while not stop_event.is_set():
-        try:
-            line = stderr_reader.readline()
-            if not line:
-                # EOF or no data
-                time.sleep(0.1)
-                continue
-
-            # Parse tqdm line
-            parsed = _parse_tqdm_line(line)
-            if parsed:
-                description, percent, current, total = parsed
-
-                # Map to overall progress
-                overall_progress = _map_stage_to_progress(description, percent)
-
-                if overall_progress and overall_progress > last_progress:
-                    logger.info(f"Progress update: {description} {percent}% -> overall {overall_progress}%")
-                    update_parsing_progress(parsing_id, overall_progress, supabase=supabase)
-                    last_progress = overall_progress
-                    current_stage = description
-
-        except Exception as e:
-            logger.warning(f"Error parsing tqdm output: {e}")
-            continue
-
-
 # Block types that contain readable text for sentence extraction
 _TEXT_BLOCK_TYPES = (
     BlockTypes.Text,
@@ -346,7 +239,6 @@ def extract_pages_and_sentences(document):
             ]
         }
     """
-    import re
     sentence_split = re.compile(r'(?<=[.!?])\s+')
 
     pages_data = []
@@ -487,111 +379,91 @@ def parse_pdf_task(file_id):
             logger.warning("Singleton not initialized, loading on-demand (dev mode)")
             initialize_parser_models()
 
+        # Count total pages
+        reader = PdfReader(temp_file)
+        total_pages = len(reader.pages)
+        logger.info(f"PDF has {total_pages} pages")
         update_parsing_progress(parsing_id, 15, supabase=supabase)
 
-        logger.info("Starting PDF conversion with tqdm progress monitoring")
+        # Delete existing page/sentence data for idempotency
+        wu.delete_file_pages(file_id, supabase)
 
-        # Create a pipe to capture stderr
-        stderr_pipe_read, stderr_pipe_write = os.pipe()
+        # Resolve renderer once (reused for all pages)
+        renderer = pdf_converter.resolve_dependencies(pdf_converter.renderer)
 
-        # Thread to monitor stderr
-        stop_event = threading.Event()
-        stderr_reader = os.fdopen(stderr_pipe_read, 'r')
-        monitor_thread = threading.Thread(
-            target=_monitor_tqdm_output,
-            args=(stderr_reader, parsing_id, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
+        all_page_texts = []
+        global_sequence = 0
 
-        # Temporarily redirect stderr to our pipe
-        old_stderr = sys.stderr
-        try:
-            sys.stderr = os.fdopen(stderr_pipe_write, 'w')
+        for page_idx in range(total_pages):
+            logger.info(f"Processing page {page_idx + 1}/{total_pages}")
 
-            # Run conversion with stderr redirected
-            # Split __call__ into build_document + renderer to access Document structure
-            document = pdf_converter.build_document(temp_file)
-            renderer = pdf_converter.resolve_dependencies(pdf_converter.renderer)
-            res = renderer(document)
-            text, _, images = text_from_rendered(res)
+            # Extract single page to temp file
+            writer = PdfWriter()
+            writer.add_page(reader.pages[page_idx])
+            page_file = f"/tmp/download_{task_id}_page_{page_idx}.pdf"
+            with open(page_file, "wb") as f:
+                writer.write(f)
 
-        finally:
-            # Restore stderr
-            sys.stderr = old_stderr
-
-            # Stop monitoring thread
-            stop_event.set()
-            monitor_thread.join(timeout=2)
-
-        logger.info(f"PDF conversion complete, extracted {len(text)} characters")
-        update_parsing_progress(parsing_id, 80, supabase=supabase)
-
-        # Extract page/sentence/bbox data from the Document structure
-        try:
-            logger.info("Extracting page and sentence structure with bounding boxes")
-            pages_data = extract_pages_and_sentences(document)
-            total_sentences = sum(len(p["sentences"]) for p in pages_data)
-            logger.info(f"Extracted {total_sentences} sentences across {len(pages_data)} pages")
-        except Exception as extract_err:
-            logger.error(f"Failed to extract page/sentence structure: {extract_err}")
-            pages_data = None
-
-        # Cleanup intermediate results only (NOT the singleton model)
-        logger.info("Cleaning up intermediate conversion results (keeping singleton)")
-        del res
-        del document
-        if images:
-            del images
-
-        gc.collect()
-        torch.cuda.empty_cache()
-        logger.info(f"GPU memory allocated after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-        # Insert page/sentence structure into database
-        if pages_data:
             try:
-                logger.info("Saving page/sentence structure to database")
-                wu.delete_file_pages(file_id, supabase)  # idempotency
-                global_sequence = 0
-                for page_data in pages_data:
+                # Run marker on single page
+                document = pdf_converter.build_document(page_file)
+                res = renderer(document)
+                page_text, _, page_images = text_from_rendered(res)
+                all_page_texts.append(page_text)
+
+                # Extract sentences + bboxes from this page's Document
+                page_data_list = extract_pages_and_sentences(document)
+
+                # Clean up GPU memory for this page
+                del res, document
+                if page_images:
+                    del page_images
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                # Save page + sentences to DB immediately
+                if page_data_list:
+                    pd = page_data_list[0]
                     page_id = wu.create_file_page(
                         file_id=file_id,
-                        page_number=page_data["page_number"],
-                        width=page_data["width"],
-                        height=page_data["height"],
+                        page_number=page_idx,
+                        width=pd["width"],
+                        height=pd["height"],
                         supabase=supabase
                     )
-                    if page_id and page_data["sentences"]:
-                        sentence_rows = [{
+                    if page_id and pd["sentences"]:
+                        rows = [{
                             "page_id": page_id,
                             "file_id": file_id,
                             "text": s["text"],
                             "sequence_number": global_sequence + i,
                             "bbox": s["bbox"]
-                        } for i, s in enumerate(page_data["sentences"])]
-                        wu.create_page_sentences_bulk(sentence_rows, supabase)
-                        global_sequence += len(sentence_rows)
-                logger.info(f"Saved {global_sequence} sentences across {len(pages_data)} pages")
-            except Exception as db_err:
-                logger.error(f"Failed to save page/sentence structure: {db_err}")
+                        } for i, s in enumerate(pd["sentences"])]
+                        wu.create_page_sentences_bulk(rows, supabase)
+                        global_sequence += len(rows)
 
-        update_parsing_progress(parsing_id, 85, supabase=supabase)
+            except Exception as page_err:
+                logger.error(f"Failed to process page {page_idx}: {page_err}")
+            finally:
+                if os.path.exists(page_file):
+                    os.remove(page_file)
 
-        # Store original raw markdown
+            # Update progress: 15% -> 85% proportional to pages
+            progress = 15 + int(70 * (page_idx + 1) / total_pages)
+            update_parsing_progress(parsing_id, progress, supabase=supabase)
+
+        logger.info(f"Processed {total_pages} pages, {global_sequence} total sentences")
+
+        # Combine all page texts into flat markdown
+        text = "\n\n".join(all_page_texts)
         raw_markdown = text
-        logger.info(f"Stored raw markdown ({len(raw_markdown)} characters)")
+        logger.info(f"Combined raw markdown ({len(raw_markdown)} characters)")
 
         # Clean markdown for TTS
         logger.info("Cleaning markdown for TTS")
         cleaned_text = clean_markdown_for_tts(text)
         logger.info(f"Cleaned text for TTS ({len(cleaned_text)} characters)")
         update_parsing_progress(parsing_id, 90, supabase=supabase)
-
-        # Text preprocessing - split into sentences
-        import re
-        sentences = re.split(r'(?<=[.!?]) +', cleaned_text)
-        logger.info(f"Split text into {len(sentences)} sentences")
 
         # Save the parsed text (cleaned version)
         parsed_text = cleaned_text
@@ -615,7 +487,8 @@ def parse_pdf_task(file_id):
             "status": "completed",
             "parsing_id": parsing_id,
             "text_length": len(parsed_text),
-            "sentence_count": len(sentences),
+            "sentence_count": global_sequence,
+            "page_count": total_pages,
             "processing_time": processing_time
         }
 
@@ -623,7 +496,6 @@ def parse_pdf_task(file_id):
         logger.error(f"Error in parse_pdf_task: {str(e)}")
         if parsing_id:
             try:
-                # Update parsing record with error
                 update_data = {
                     "status": "failed",
                     "job_completion": 0,
@@ -635,26 +507,13 @@ def parse_pdf_task(file_id):
 
         # Cleanup on error
         try:
-            # Clean up intermediate results only (keep singleton)
-            # NO cleanup of pdf_converter - it's a singleton
-            if 'document' in locals():
-                del document
-            if 'res' in locals():
-                del res
-            if 'images' in locals():
-                del images
-            if 'text' in locals():
-                del text
-            if 'sentences' in locals():
-                del sentences
-
             gc.collect()
             torch.cuda.empty_cache()
             logger.info(f"GPU memory allocated after error cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         except Exception as cleanup_err:
             logger.warning(f"Error during GPU cleanup: {cleanup_err}")
 
-        # Clean up temporary file
+        # Clean up temporary files
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)

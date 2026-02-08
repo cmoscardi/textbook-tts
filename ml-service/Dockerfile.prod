@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir \
     fastapi uvicorn[standard] python-multipart pydantic \
     celery sqlalchemy psycopg2 \
     marker-pdf \
+    pypdf \
     supabase \
     pydub \
     gunicorn
