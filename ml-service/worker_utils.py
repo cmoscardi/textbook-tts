@@ -117,7 +117,7 @@ def delete_file_pages(file_id: str, supabase):
         logger.error(f"Failed to delete existing pages for file {file_id}: {e}")
 
 
-def create_file_page(file_id: str, page_number: int, width: float, height: float, supabase=None):
+def create_file_page(file_id: str, page_number: int, width: float, height: float, markdown_text: str = None, supabase=None):
     """Insert a single file_page record.
 
     Returns:
@@ -132,6 +132,8 @@ def create_file_page(file_id: str, page_number: int, width: float, height: float
             "width": width,
             "height": height
         }
+        if markdown_text is not None:
+            data["markdown_text"] = markdown_text
         result = supabase.table("file_pages").insert(data).execute()
         return result.data[0]["page_id"]
     except Exception as e:

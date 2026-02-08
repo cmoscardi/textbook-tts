@@ -139,6 +139,16 @@ export default function UploadSection({ onUploadComplete }) {
           setIsParsing(false);
           clearInterval(pollingIntervalRef.current);
           pollingIntervalRef.current = null;
+        } else if (status === 'running' && job_completion > 15) {
+          // First page is ready — navigate to FileViewer for progressive display
+          setUploadStatus('First page ready! Opening file...');
+          setIsParsing(false);
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+
+          setTimeout(() => {
+            navigate(`/app/view/${file_id}`);
+          }, 500);
         } else {
           setUploadStatus(`Parsing in progress... ${job_completion}%`);
         }

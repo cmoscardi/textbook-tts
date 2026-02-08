@@ -429,6 +429,7 @@ def parse_pdf_task(file_id):
                         page_number=page_idx,
                         width=pd["width"],
                         height=pd["height"],
+                        markdown_text=page_text,
                         supabase=supabase
                     )
                     if page_id and pd["sentences"]:

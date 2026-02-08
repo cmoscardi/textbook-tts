@@ -19,6 +19,12 @@ export default function FileViewer() {
   const currentJobIdRef = useRef(null);
   const isMountedRef = useRef(true);
 
+  // Progressive parsing state
+  const [isParsingInProgress, setIsParsingInProgress] = useState(false);
+  const [parsingProgress, setParsingProgress] = useState(0);
+  const [pageMarkdowns, setPageMarkdowns] = useState([]);
+  const parsingPollingRef = useRef(null);
+
   useEffect(() => {
     if (session?.user && fileId) {
       fetchFile();
@@ -37,6 +43,10 @@ export default function FileViewer() {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
         currentJobIdRef.current = null;
+      }
+      if (parsingPollingRef.current) {
+        clearInterval(parsingPollingRef.current);
+        parsingPollingRef.current = null;
       }
     };
   }, []);
@@ -57,6 +67,10 @@ export default function FileViewer() {
           console.log('Page visible - forcing conversion status check');
           checkConversionStatus(conversion.job_id);
         }
+        if (isParsingInProgress) {
+          console.log('Page visible - forcing parsing status check');
+          pollParsingStatus();
+        }
       }
     };
 
@@ -65,7 +79,9 @@ export default function FileViewer() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [conversion]);
+  }, [conversion, isParsingInProgress]);
+
+  // --- Conversion polling (existing) ---
 
   const checkConversionStatus = async (jobId) => {
     console.log('[Poll] Checking status for job:', jobId);
@@ -163,6 +179,122 @@ export default function FileViewer() {
     setConversion({ job_id: data.id, status: 'pending', job_completion: 0 });
   };
 
+  // --- Parsing polling (progressive loading) ---
+
+  const fetchPageMarkdowns = async () => {
+    const { data, error } = await supabase
+      .from('file_pages')
+      .select('markdown_text')
+      .eq('file_id', fileId)
+      .order('page_number', { ascending: true });
+
+    if (error) {
+      console.error('[Parsing] Error fetching page markdowns:', error);
+      return [];
+    }
+
+    const texts = (data || [])
+      .map(row => row.markdown_text)
+      .filter(Boolean);
+    return texts;
+  };
+
+  const pollParsingStatus = async () => {
+    if (!isMountedRef.current) return;
+
+    try {
+      // Check parsing status
+      const { data: parsingData, error: parsingError } = await supabase
+        .from('file_parsings')
+        .select('status, job_completion')
+        .eq('file_id', fileId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (parsingError) {
+        console.error('[Parsing] Error checking parsing status:', parsingError);
+        return;
+      }
+
+      if (!parsingData) return;
+
+      setParsingProgress(parsingData.job_completion || 0);
+
+      // Fetch updated page markdowns
+      const texts = await fetchPageMarkdowns();
+      setPageMarkdowns(texts);
+
+      if (parsingData.status === 'completed') {
+        console.log('[Parsing] Parsing completed, re-fetching file');
+        // Stop parsing polling
+        if (parsingPollingRef.current) {
+          clearInterval(parsingPollingRef.current);
+          parsingPollingRef.current = null;
+        }
+        setIsParsingInProgress(false);
+
+        // Re-fetch file to get raw_markdown
+        const { data: freshFile, error: fileError } = await supabase
+          .from('files')
+          .select('*')
+          .eq('file_id', fileId)
+          .eq('user_id', session.user.id)
+          .single();
+
+        if (!fileError && freshFile) {
+          setFile(freshFile);
+        }
+
+        // Fetch conversion data now that parsing is done
+        const { data: conversionData, error: conversionError } = await supabase
+          .from('file_conversions')
+          .select('*')
+          .eq('file_id', fileId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!conversionError && conversionData) {
+          setConversion(conversionData);
+          if (conversionData.status === 'completed' && conversionData.file_path) {
+            const { data: urlData, error: urlError } = await supabase.storage
+              .from('files')
+              .createSignedUrl(conversionData.file_path, 3600);
+            if (!urlError && urlData?.signedUrl) {
+              setAudioUrl(urlData.signedUrl);
+            }
+          }
+        }
+      } else if (parsingData.status === 'failed') {
+        if (parsingPollingRef.current) {
+          clearInterval(parsingPollingRef.current);
+          parsingPollingRef.current = null;
+        }
+        setIsParsingInProgress(false);
+        setError('Parsing failed. Please try uploading the file again.');
+      }
+    } catch (err) {
+      console.error('[Parsing] Exception polling parsing status:', err);
+    }
+  };
+
+  const startParsingPolling = () => {
+    if (parsingPollingRef.current) {
+      clearInterval(parsingPollingRef.current);
+    }
+
+    // Poll immediately
+    pollParsingStatus();
+
+    // Then poll every 3 seconds
+    parsingPollingRef.current = setInterval(() => {
+      pollParsingStatus();
+    }, 3000);
+  };
+
+  // --- File fetching ---
+
   const fetchFile = async () => {
     try {
       setLoading(true);
@@ -185,11 +317,41 @@ export default function FileViewer() {
       }
 
       if (!data.parsed_text) {
-        setError('This file has not been parsed yet. Please return to the files page and wait for parsing to complete.');
-        return;
-      }
+        // File not fully parsed yet — check if parsing is in progress
+        const { data: parsingData, error: parsingError } = await supabase
+          .from('file_parsings')
+          .select('status, job_completion')
+          .eq('file_id', fileId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      setFile(data);
+        if (parsingError) {
+          console.error('[Parsing] Error checking parsing status:', parsingError);
+        }
+
+        if (parsingData && (parsingData.status === 'running' || parsingData.status === 'pending')) {
+          // Parsing is in progress — set up progressive display
+          setFile(data);
+          setIsParsingInProgress(true);
+          setParsingProgress(parsingData.job_completion || 0);
+
+          // Fetch any already-parsed page markdowns
+          const texts = await fetchPageMarkdowns();
+          setPageMarkdowns(texts);
+
+          // Start polling for more pages
+          startParsingPolling();
+        } else if (parsingData && parsingData.status === 'failed') {
+          setError('Parsing failed. Please try uploading the file again.');
+          return;
+        } else {
+          setError('This file has not been parsed yet. Please return to the files page and upload it again.');
+          return;
+        }
+      } else {
+        setFile(data);
+      }
 
       // Fetch conversion data (optional - for audio player)
       const { data: conversionData, error: conversionError } = await supabase
@@ -198,7 +360,7 @@ export default function FileViewer() {
         .eq('file_id', fileId)
         .order('created_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       // Set conversion data if it exists (regardless of status)
       if (!conversionError && conversionData) {
@@ -225,6 +387,14 @@ export default function FileViewer() {
     }
   };
 
+  // --- Display text logic ---
+
+  // Use raw_markdown if available (completed parsing), otherwise join per-page markdowns
+  const displayMarkdown = file?.raw_markdown
+    || (pageMarkdowns.length > 0 ? pageMarkdowns.join('\n\n') : null);
+
+  // --- Helpers ---
+
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -244,7 +414,8 @@ export default function FileViewer() {
   };
 
   const handleDownloadMarkdown = () => {
-    const blob = new Blob([file.parsed_text], { type: 'text/markdown' });
+    const text = file?.raw_markdown || file?.parsed_text || displayMarkdown || '';
+    const blob = new Blob([text], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -308,6 +479,8 @@ export default function FileViewer() {
     );
   }
 
+  if (!file) return null;
+
   return (
     <div className="max-w-5xl mx-auto">
       {/* Header with back button and file info */}
@@ -360,38 +533,20 @@ export default function FileViewer() {
 
             {/* Action buttons */}
             <div className="flex gap-2 ml-4">
-              <button
-                onClick={handleDownloadMarkdown}
-                className="px-3 py-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
-                title="Download as markdown file"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Download PDF
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Audio Conversion Section */}
-      <div className="mb-6 bg-white shadow rounded-lg p-6">
-        {/* Show audio player if conversion is completed */}
-        {audioUrl && conversion?.status === 'completed' ? (
-          <>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center w-12 h-12 bg-green-100 rounded-full">
-                  <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-gray-800">Audio Player</h2>
-                    <p className="text-sm text-gray-600">Listen to your converted audiobook</p>
-                  </div>
-                </div>
+              {displayMarkdown && (
+                <button
+                  onClick={handleDownloadMarkdown}
+                  className="px-3 py-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
+                  title="Download as markdown file"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Download PDF
+                </button>
+              )}
+              {/* Convert / conversion status / download MP3 */}
+              {audioUrl && conversion?.status === 'completed' ? (
                 <button
                   onClick={handleDownloadAudio}
                   className="px-3 py-2 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition-colors flex items-center gap-2"
@@ -399,78 +554,131 @@ export default function FileViewer() {
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    Download MP3
-                  </button>
+                  </svg>
+                  Download MP3
+                </button>
+              ) : conversion && (conversion.status === 'pending' || conversion.status === 'running') ? (
+                <div className="px-3 py-2 text-sm bg-blue-100 text-blue-700 rounded flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Converting {conversion.job_completion || 0}%
                 </div>
-              <audio
-                ref={audioRef}
-                controls
-                className="w-full"
-                preload="metadata"
-              >
-                <source src={audioUrl} type="audio/mpeg" />
-                Your browser does not support the audio element.
-              </audio>
-            </>
-          ) : conversion && (conversion.status === 'pending' || conversion.status === 'running') ? (
-            /* Show conversion progress */
-            <div className="flex items-center gap-4">
-              <div className="flex items-center justify-center w-12 h-12 bg-blue-100 rounded-full">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h2 className="text-lg font-semibold text-gray-800 mb-2">Converting to Audio</h2>
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 bg-gray-200 rounded-full h-3">
-                    <div
-                      className="bg-blue-600 h-3 rounded-full transition-all duration-500"
-                      style={{ width: `${conversion?.job_completion || 0}%` }}
-                    ></div>
-                  </div>
-                  <span className="text-sm font-medium text-gray-700 min-w-[3rem]">
-                    {conversion?.job_completion || 0}%
-                  </span>
+              ) : isParsingInProgress ? (
+                <div className="px-3 py-2 text-sm bg-yellow-100 text-yellow-700 rounded flex items-center gap-2" title="Available after parsing completes">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Parsing {parsingProgress}%
                 </div>
-                <p className="text-sm text-gray-600 mt-2">
-                  {conversion?.status === 'pending' ? 'Preparing to convert...' : 'Converting your document to audio...'}
-                </p>
-              </div>
-            </div>
-          ) : (
-            /* Show convert button if no conversion exists */
-            <div className="flex items-center gap-4">
-              <div className="flex items-center justify-center w-12 h-12 bg-gray-100 rounded-full">
-                <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h2 className="text-lg font-semibold text-gray-800 mb-1">Convert to Audio</h2>
-                <p className="text-sm text-gray-600 mb-3">Generate an audio version of this document</p>
+              ) : !isParsingInProgress && file?.parsed_text ? (
                 <button
                   onClick={handleConvert}
-                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-2"
+                  className="px-3 py-2 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition-colors flex items-center gap-2"
+                  title="Convert to audio"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
                   </svg>
                   Convert to MP3
                 </button>
-              </div>
+              ) : null}
             </div>
-          )}
+          </div>
         </div>
+      </div>
+
+      {/* Audio Player Section — only shown when there's an audio player or active conversion */}
+      {audioUrl && conversion?.status === 'completed' ? (
+        <div className="mb-6 bg-white shadow rounded-lg p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex items-center justify-center w-10 h-10 bg-green-100 rounded-full">
+              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-800">Audio Player</h2>
+              <p className="text-sm text-gray-600">Listen to your converted audiobook</p>
+            </div>
+          </div>
+          <audio
+            ref={audioRef}
+            controls
+            className="w-full"
+            preload="metadata"
+          >
+            <source src={audioUrl} type="audio/mpeg" />
+            Your browser does not support the audio element.
+          </audio>
+        </div>
+      ) : conversion && (conversion.status === 'pending' || conversion.status === 'running') ? (
+        <div className="mb-6 bg-white shadow rounded-lg p-6">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full">
+              <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h2 className="text-lg font-semibold text-gray-800 mb-2">Converting to Audio</h2>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 bg-gray-200 rounded-full h-3">
+                  <div
+                    className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                    style={{ width: `${conversion?.job_completion || 0}%` }}
+                  ></div>
+                </div>
+                <span className="text-sm font-medium text-gray-700 min-w-[3rem]">
+                  {conversion?.job_completion || 0}%
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 mt-2">
+                {conversion?.status === 'pending' ? 'Preparing to convert...' : 'Converting your document to audio...'}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Markdown content */}
       <div className="bg-white shadow rounded-lg p-8">
-        <article className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600 prose-code:text-pink-700 prose-code:bg-pink-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-table:text-gray-800">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {file.parsed_text}
-          </ReactMarkdown>
-        </article>
+        {isParsingInProgress && !displayMarkdown ? (
+          /* Waiting for first page */
+          <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+            <svg className="animate-spin h-8 w-8 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p className="text-lg font-medium">Waiting for first page...</p>
+            <p className="text-sm mt-1">Parsing progress: {parsingProgress}%</p>
+          </div>
+        ) : displayMarkdown ? (
+          <>
+            <article className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600 prose-code:text-pink-700 prose-code:bg-pink-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-table:text-gray-800">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {displayMarkdown}
+              </ReactMarkdown>
+            </article>
+
+            {/* Progress indicator at bottom during parsing */}
+            {isParsingInProgress && (
+              <div className="mt-8 pt-6 border-t border-gray-200">
+                <div className="flex items-center gap-3 text-gray-500">
+                  <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span className="text-sm">Parsing more pages... {parsingProgress}% complete</span>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-gray-500 text-center py-8">No content available</div>
+        )}
       </div>
     </div>
   );
