@@ -27,10 +27,7 @@ export default function FileViewer() {
   // Sentence-by-sentence playback state
   const [sentences, setSentences] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentSentenceIdx, setCurrentSentenceIdx] = useState(() => {
-    const saved = localStorage.getItem(`playback-${fileId}`);
-    return saved ? parseInt(saved, 10) : 0;
-  });
+  const [currentSentenceIdx, setCurrentSentenceIdx] = useState(0);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const sentenceAudioCache = useRef(new Map());
   const currentAudioRef = useRef(null);
@@ -72,12 +69,21 @@ export default function FileViewer() {
     };
   }, []);
 
-  // Persist playback position to localStorage
+  // Persist playback position to database (debounced)
   useEffect(() => {
-    if (sentences.length > 0) {
-      localStorage.setItem(`playback-${fileId}`, currentSentenceIdx);
-    }
-  }, [currentSentenceIdx, fileId, sentences.length]);
+    if (sentences.length === 0) return;
+    const timeout = setTimeout(() => {
+      supabase
+        .from('files')
+        .update({ playback_position: currentSentenceIdx })
+        .eq('file_id', fileId)
+        .eq('user_id', session.user.id)
+        .then(({ error }) => {
+          if (error) console.error('Failed to save playback position:', error);
+        });
+    }, 500);
+    return () => clearTimeout(timeout);
+  }, [currentSentenceIdx, fileId, sentences.length, session?.user?.id]);
 
   // Start polling when conversion changes to pending/running
   useEffect(() => {
@@ -262,8 +268,7 @@ export default function FileViewer() {
 
       if (sentenceData && sentenceData.length > 0) {
         setSentences(sentenceData);
-        const savedIdx = parseInt(localStorage.getItem(`playback-${fileId}`) || '0', 10);
-        setCurrentSentenceIdx(prev => Math.min(prev === 0 ? savedIdx : prev, sentenceData.length - 1));
+        setCurrentSentenceIdx(prev => Math.min(prev, sentenceData.length - 1));
       }
 
       if (parsingData.status === 'completed') {
@@ -507,8 +512,7 @@ export default function FileViewer() {
 
         if (sentenceData && sentenceData.length > 0) {
           setSentences(sentenceData);
-          const savedIdx = parseInt(localStorage.getItem(`playback-${fileId}`) || '0', 10);
-          setCurrentSentenceIdx(Math.min(savedIdx, sentenceData.length - 1));
+          setCurrentSentenceIdx(Math.min(data.playback_position || 0, sentenceData.length - 1));
         }
       }
 
