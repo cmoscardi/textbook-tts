@@ -410,9 +410,9 @@ export default function FileViewer() {
       if (stopRequestedRef.current) break;
       setIsSynthesizing(false);
 
-      // Pre-fetch next sentence
-      if (i + 1 < sentences.length) {
-        synthesizeSentence(i + 1).catch(() => {});
+      // Pre-fetch next 3 sentences
+      for (let j = 1; j <= 3 && i + j < sentences.length; j++) {
+        synthesizeSentence(i + j).catch(() => {});
       }
 
       // Play current sentence (reuse same Audio element)
