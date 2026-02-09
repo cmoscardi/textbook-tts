@@ -388,6 +388,11 @@ export default function FileViewer() {
     stopRequestedRef.current = false;
     setIsPlaying(true);
 
+    // Reuse a single Audio element for the entire playback session.
+    // On mobile browsers, each new Audio() requires a fresh user gesture
+    // to call play(). Reusing one element preserves the gesture permission.
+    const audio = new Audio();
+
     for (let i = startIdx; i < sentences.length; i++) {
       if (stopRequestedRef.current) break;
 
@@ -410,14 +415,25 @@ export default function FileViewer() {
         synthesizeSentence(i + 1).catch(() => {});
       }
 
-      // Play current sentence
-      const audio = new Audio(blobUrl);
+      // Play current sentence (reuse same Audio element)
+      audio.src = blobUrl;
       currentAudioRef.current = audio;
 
       await new Promise((resolve) => {
-        audio.addEventListener('ended', resolve);
-        audio.addEventListener('error', resolve);
-        audio.play().catch(resolve);
+        const done = () => {
+          audio.removeEventListener('ended', done);
+          audio.removeEventListener('error', done);
+          audio.removeEventListener('pause', done);
+          resolve();
+        };
+        audio.addEventListener('ended', done);
+        audio.addEventListener('error', done);
+        // Resolve on pause so external stop (handlePlayPause) unblocks the loop
+        audio.addEventListener('pause', done);
+        audio.play().catch((err) => {
+          console.error('Audio play() rejected:', err);
+          done();
+        });
       });
 
       currentAudioRef.current = null;
