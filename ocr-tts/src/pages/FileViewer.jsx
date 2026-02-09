@@ -14,7 +14,6 @@ export default function FileViewer() {
   const [audioUrl, setAudioUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const audioRef = useRef(null);
   const pollingIntervalRef = useRef(null);
   const currentJobIdRef = useRef(null);
   const isMountedRef = useRef(true);
@@ -28,7 +27,10 @@ export default function FileViewer() {
   // Sentence-by-sentence playback state
   const [sentences, setSentences] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentSentenceIdx, setCurrentSentenceIdx] = useState(0);
+  const [currentSentenceIdx, setCurrentSentenceIdx] = useState(() => {
+    const saved = localStorage.getItem(`playback-${fileId}`);
+    return saved ? parseInt(saved, 10) : 0;
+  });
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const sentenceAudioCache = useRef(new Map());
   const currentAudioRef = useRef(null);
@@ -69,6 +71,13 @@ export default function FileViewer() {
       sentenceAudioCache.current.clear();
     };
   }, []);
+
+  // Persist playback position to localStorage
+  useEffect(() => {
+    if (sentences.length > 0) {
+      localStorage.setItem(`playback-${fileId}`, currentSentenceIdx);
+    }
+  }, [currentSentenceIdx, fileId, sentences.length]);
 
   // Start polling when conversion changes to pending/running
   useEffect(() => {
@@ -253,6 +262,8 @@ export default function FileViewer() {
 
       if (sentenceData && sentenceData.length > 0) {
         setSentences(sentenceData);
+        const savedIdx = parseInt(localStorage.getItem(`playback-${fileId}`) || '0', 10);
+        setCurrentSentenceIdx(prev => Math.min(prev === 0 ? savedIdx : prev, sentenceData.length - 1));
       }
 
       if (parsingData.status === 'completed') {
@@ -413,6 +424,21 @@ export default function FileViewer() {
     }
   }, [isPlaying, currentSentenceIdx, playFromIndex]);
 
+  const handleProgressClick = useCallback((e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fraction = (e.clientX - rect.left) / rect.width;
+    const idx = Math.min(Math.floor(fraction * sentences.length), sentences.length - 1);
+    setCurrentSentenceIdx(idx);
+    if (isPlaying) {
+      stopRequestedRef.current = true;
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      setTimeout(() => playFromIndex(idx), 50);
+    }
+  }, [sentences, isPlaying, playFromIndex]);
+
   // --- File fetching ---
 
   const fetchFile = async () => {
@@ -481,6 +507,8 @@ export default function FileViewer() {
 
         if (sentenceData && sentenceData.length > 0) {
           setSentences(sentenceData);
+          const savedIdx = parseInt(localStorage.getItem(`playback-${fileId}`) || '0', 10);
+          setCurrentSentenceIdx(Math.min(savedIdx, sentenceData.length - 1));
         }
       }
 
@@ -664,32 +692,6 @@ export default function FileViewer() {
 
             {/* Action buttons */}
             <div className="flex gap-2 ml-4">
-              {/* Play/Stop button for sentence-by-sentence playback */}
-              {sentences.length > 0 && (
-                <button
-                  onClick={handlePlayPause}
-                  className={`px-3 py-2 text-sm text-white rounded transition-colors flex items-center gap-2 ${
-                    isPlaying ? 'bg-red-500 hover:bg-red-600' : 'bg-purple-500 hover:bg-purple-600'
-                  }`}
-                  title={isPlaying ? 'Stop playback' : 'Play sentences'}
-                >
-                  {isSynthesizing && !currentAudioRef.current ? (
-                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  ) : isPlaying ? (
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <rect x="6" y="5" width="12" height="14" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                  )}
-                  {isPlaying ? 'Stop' : 'Play'}
-                </button>
-              )}
               {displayMarkdown && (
                 <button
                   onClick={handleDownloadMarkdown}
@@ -747,39 +749,56 @@ export default function FileViewer() {
         </div>
       </div>
 
-      {/* Sentence playback progress */}
-      {isPlaying && sentences.length > 0 && (
-        <div className="mb-4 text-sm text-gray-600 px-1">
-          Sentence {currentSentenceIdx + 1} of {sentences.length}
-          {isSynthesizing && ' — synthesizing...'}
+      {/* Sentence Player */}
+      {sentences.length > 0 && (
+        <div className="mb-6 bg-white shadow rounded-lg p-6">
+          <div className="flex flex-col items-center">
+            {/* Large play/pause button */}
+            <button
+              onClick={handlePlayPause}
+              className="w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isSynthesizing && !currentAudioRef.current ? (
+                <svg className="animate-spin h-7 w-7" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : isPlaying ? (
+                <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="4" width="4" height="16" />
+                  <rect x="14" y="4" width="4" height="16" />
+                </svg>
+              ) : (
+                <svg className="w-9 h-9 ml-1" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M4 2v20l18-10z" />
+                </svg>
+              )}
+            </button>
+
+            {/* Progress bar */}
+            <div
+              className="w-full mt-4 bg-gray-200 rounded-full h-2 cursor-pointer"
+              onClick={handleProgressClick}
+              title="Click to jump to a sentence"
+            >
+              <div
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${sentences.length > 0 ? ((currentSentenceIdx + 1) / sentences.length) * 100 : 0}%` }}
+              ></div>
+            </div>
+
+            {/* Sentence counter */}
+            <p className="mt-2 text-sm text-gray-600">
+              Sentence {currentSentenceIdx + 1} of {sentences.length}
+              {isSynthesizing && ' — synthesizing...'}
+            </p>
+          </div>
         </div>
       )}
 
-      {/* Audio Player Section — only shown when there's an audio player or active conversion */}
-      {audioUrl && conversion?.status === 'completed' ? (
-        <div className="mb-6 bg-white shadow rounded-lg p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex items-center justify-center w-10 h-10 bg-green-100 rounded-full">
-              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-gray-800">Audio Player</h2>
-              <p className="text-sm text-gray-600">Listen to your converted audiobook</p>
-            </div>
-          </div>
-          <audio
-            ref={audioRef}
-            controls
-            className="w-full"
-            preload="metadata"
-          >
-            <source src={audioUrl} type="audio/mpeg" />
-            Your browser does not support the audio element.
-          </audio>
-        </div>
-      ) : conversion && (conversion.status === 'pending' || conversion.status === 'running') ? (
+      {/* Conversion progress */}
+      {conversion && (conversion.status === 'pending' || conversion.status === 'running') && (
         <div className="mb-6 bg-white shadow rounded-lg p-6">
           <div className="flex items-center gap-4">
             <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full">
@@ -806,7 +825,7 @@ export default function FileViewer() {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
       {/* Markdown content */}
       <div className="bg-white shadow rounded-lg p-8">
