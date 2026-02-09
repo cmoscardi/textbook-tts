@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
+import PdfOverlayViewer from '../components/PdfOverlayViewer.jsx';
 
 export default function FileViewer() {
   const { fileId } = useParams();
@@ -23,6 +24,10 @@ export default function FileViewer() {
   const [parsingProgress, setParsingProgress] = useState(0);
   const [pageMarkdowns, setPageMarkdowns] = useState([]);
   const parsingPollingRef = useRef(null);
+
+  // PDF overlay state
+  const [pages, setPages] = useState([]);
+  const [pdfUrl, setPdfUrl] = useState(null);
 
   // Sentence-by-sentence playback state
   const [sentences, setSentences] = useState([]);
@@ -262,7 +267,7 @@ export default function FileViewer() {
       // Fetch sentences progressively so Play button appears during parsing
       const { data: sentenceData } = await supabase
         .from('page_sentences')
-        .select('sentence_id, text, sequence_number')
+        .select('sentence_id, text, sequence_number, bbox, page_id')
         .eq('file_id', fileId)
         .order('sequence_number', { ascending: true });
 
@@ -270,6 +275,14 @@ export default function FileViewer() {
         setSentences(sentenceData);
         setCurrentSentenceIdx(prev => Math.min(prev, sentenceData.length - 1));
       }
+
+      // Fetch page dimensions for PDF overlay
+      const { data: pagesData } = await supabase
+        .from('file_pages')
+        .select('page_id, page_number, width, height')
+        .eq('file_id', fileId)
+        .order('page_number', { ascending: true });
+      if (pagesData) setPages(pagesData);
 
       if (parsingData.status === 'completed') {
         console.log('[Parsing] Parsing completed, re-fetching file');
@@ -467,6 +480,16 @@ export default function FileViewer() {
         return;
       }
 
+      // Generate signed URL for original PDF
+      if (data.file_path) {
+        const { data: pdfUrlData, error: pdfUrlError } = await supabase.storage
+          .from('files')
+          .createSignedUrl(data.file_path, 3600);
+        if (!pdfUrlError && pdfUrlData?.signedUrl) {
+          setPdfUrl(pdfUrlData.signedUrl);
+        }
+      }
+
       if (!data.parsed_text) {
         // File not fully parsed yet — check if parsing is in progress
         const { data: parsingData, error: parsingError } = await supabase
@@ -506,7 +529,7 @@ export default function FileViewer() {
         // Fetch sentences for playback
         const { data: sentenceData } = await supabase
           .from('page_sentences')
-          .select('sentence_id, text, sequence_number')
+          .select('sentence_id, text, sequence_number, bbox, page_id')
           .eq('file_id', fileId)
           .order('sequence_number', { ascending: true });
 
@@ -514,6 +537,14 @@ export default function FileViewer() {
           setSentences(sentenceData);
           setCurrentSentenceIdx(Math.min(data.playback_position || 0, sentenceData.length - 1));
         }
+
+        // Fetch page dimensions for PDF overlay
+        const { data: pagesData } = await supabase
+          .from('file_pages')
+          .select('page_id, page_number, width, height')
+          .eq('file_id', fileId)
+          .order('page_number', { ascending: true });
+        if (pagesData) setPages(pagesData);
       }
 
       // Fetch conversion data (optional - for audio player)
@@ -831,9 +862,9 @@ export default function FileViewer() {
         </div>
       )}
 
-      {/* Markdown content */}
+      {/* Document content */}
       <div className="bg-white shadow rounded-lg p-8">
-        {isParsingInProgress && !displayMarkdown ? (
+        {isParsingInProgress && !displayMarkdown && pages.length === 0 ? (
           /* Waiting for first page */
           <div className="flex flex-col items-center justify-center py-16 text-gray-500">
             <svg className="animate-spin h-8 w-8 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -843,6 +874,39 @@ export default function FileViewer() {
             <p className="text-lg font-medium">Waiting for first page...</p>
             <p className="text-sm mt-1">Parsing progress: {parsingProgress}%</p>
           </div>
+        ) : pdfUrl && pages.length > 0 ? (
+          <>
+            <PdfOverlayViewer
+              pdfUrl={pdfUrl}
+              pages={pages}
+              sentences={sentences}
+              currentSentenceIdx={currentSentenceIdx}
+              onSentenceClick={(idx) => {
+                setCurrentSentenceIdx(idx);
+                if (isPlaying) {
+                  stopRequestedRef.current = true;
+                  if (currentAudioRef.current) {
+                    currentAudioRef.current.pause();
+                    currentAudioRef.current = null;
+                  }
+                  setTimeout(() => playFromIndex(idx), 50);
+                }
+              }}
+            />
+
+            {/* Progress indicator at bottom during parsing */}
+            {isParsingInProgress && (
+              <div className="mt-8 pt-6 border-t border-gray-200">
+                <div className="flex items-center gap-3 text-gray-500">
+                  <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span className="text-sm">Parsing more pages... {parsingProgress}% complete</span>
+                </div>
+              </div>
+            )}
+          </>
         ) : displayMarkdown ? (
           <>
             <article className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600 prose-code:text-pink-700 prose-code:bg-pink-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-table:text-gray-800">
