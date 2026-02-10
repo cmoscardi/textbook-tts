@@ -115,7 +115,7 @@ export default function PdfOverlayViewer({
                   pointerEvents: 'none',
                 }}
               >
-                {pageSentences.map((sentence) => {
+                {[...pageSentences].reverse().map((sentence) => {
                   const isActive = sentence.globalIdx === currentSentenceIdx;
                   const style = getSentenceStyle(sentence.globalIdx, sentence.sentence_id);
 

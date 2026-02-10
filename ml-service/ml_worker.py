@@ -302,8 +302,14 @@ def extract_pages_and_sentences(document):
                 for char_idx in range(start, min(end, len(char_to_line))):
                     spanned_line_indices.add(char_to_line[char_idx])
 
-                # Collect the polygons of those lines
-                sentence_polygons = [line_polygons[li] for li in sorted(spanned_line_indices)]
+                # Collect the polygons of those lines, deduplicating identical ones
+                # (marker sometimes returns the block-level bbox for every line)
+                seen = []
+                for li in sorted(spanned_line_indices):
+                    poly = line_polygons[li]
+                    if poly not in seen:
+                        seen.append(poly)
+                sentence_polygons = seen
 
                 page_info["sentences"].append({
                     "text": sentence_text,
