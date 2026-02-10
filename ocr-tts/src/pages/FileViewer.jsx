@@ -37,6 +37,8 @@ export default function FileViewer() {
   const sentenceAudioCache = useRef(new Map());
   const currentAudioRef = useRef(null);
   const stopRequestedRef = useRef(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const playbackRateRef = useRef(1);
 
   useEffect(() => {
     if (session?.user && fileId) {
@@ -425,6 +427,7 @@ export default function FileViewer() {
 
       // Play current sentence (reuse same Audio element)
       audio.src = blobUrl;
+      audio.playbackRate = playbackRateRef.current;
       currentAudioRef.current = audio;
 
       await new Promise((resolve) => {
@@ -451,6 +454,13 @@ export default function FileViewer() {
     setIsPlaying(false);
     setIsSynthesizing(false);
   }, [sentences, synthesizeSentence]);
+
+  useEffect(() => {
+    playbackRateRef.current = playbackRate;
+    if (currentAudioRef.current) {
+      currentAudioRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate]);
 
   const handlePlayPause = useCallback(() => {
     if (isPlaying) {
@@ -834,6 +844,23 @@ export default function FileViewer() {
                 </svg>
               )}
             </button>
+
+            {/* Speed control */}
+            <div className="flex items-center gap-2 mt-3">
+              {[0.5, 1, 1.5, 2, 2.5, 3].map((rate) => (
+                <button
+                  key={rate}
+                  onClick={() => setPlaybackRate(rate)}
+                  className={`px-2 py-1 text-xs rounded ${
+                    playbackRate === rate
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  {rate}x
+                </button>
+              ))}
+            </div>
 
             {/* Progress bar */}
             <div
