@@ -310,6 +310,22 @@ def extract_pages_and_sentences(document):
                     "bbox": sentence_polygons
                 })
 
+        # Merge short sentences (<150 chars) with the next one
+        merged = []
+        for sent in page_info["sentences"]:
+            if merged and len(merged[-1]["text"]) < 150:
+                merged[-1]["text"] += " " + sent["text"]
+                merged[-1]["bbox"].extend(sent["bbox"])
+            else:
+                merged.append({"text": sent["text"], "bbox": list(sent["bbox"])})
+
+        # If the last entry is still short, fold it into the previous one
+        if len(merged) >= 2 and len(merged[-1]["text"]) < 150:
+            merged[-2]["text"] += " " + merged[-1]["text"]
+            merged[-2]["bbox"].extend(merged[-1]["bbox"])
+            merged.pop()
+
+        page_info["sentences"] = merged
         pages_data.append(page_info)
 
     return pages_data

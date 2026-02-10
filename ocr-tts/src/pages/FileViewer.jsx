@@ -282,6 +282,7 @@ export default function FileViewer() {
         .order('sequence_number', { ascending: true });
 
       if (sentenceData && sentenceData.length > 0) {
+        sentenceData.sort((a, b) => a.sequence_number - b.sequence_number);
         setSentences(sentenceData);
         setCurrentSentenceIdx(prev => Math.min(prev, sentenceData.length - 1));
       }
@@ -568,6 +569,7 @@ export default function FileViewer() {
           .order('sequence_number', { ascending: true });
 
         if (sentenceData && sentenceData.length > 0) {
+          sentenceData.sort((a, b) => a.sequence_number - b.sequence_number);
           setSentences(sentenceData);
           setCurrentSentenceIdx(Math.min(data.playback_position || 0, sentenceData.length - 1));
         }
