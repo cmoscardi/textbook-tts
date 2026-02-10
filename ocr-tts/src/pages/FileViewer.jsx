@@ -90,6 +90,14 @@ export default function FileViewer() {
     return () => clearTimeout(timeout);
   }, [currentSentenceIdx, fileId, sentences.length, session?.user?.id]);
 
+  // Pre-fetch first few sentences as soon as they're available
+  useEffect(() => {
+    if (sentences.length === 0) return;
+    for (let i = currentSentenceIdx; i < Math.min(currentSentenceIdx + 3, sentences.length); i++) {
+      synthesizeSentence(i).catch(() => {});
+    }
+  }, [sentences.length > 0]);
+
   // Start polling when conversion changes to pending/running
   useEffect(() => {
     if (conversion && (conversion.status === 'pending' || conversion.status === 'running')) {
