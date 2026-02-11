@@ -407,6 +407,25 @@ def parse_pdf_task(file_id):
         logger.info(f"PDF has {total_pages} pages")
         update_parsing_progress(parsing_id, 15, supabase=supabase)
 
+        # Check and increment page quota before any GPU work
+        logger.info(f"Checking page quota for user {file_info.user_id} ({total_pages} pages)")
+        try:
+            supabase.rpc('increment_page_usage', {
+                'p_user_id': file_info.user_id,
+                'p_page_count': total_pages
+            }).execute()
+            logger.info(f"Page quota reserved for {total_pages} pages")
+        except Exception as quota_err:
+            error_msg = str(quota_err)
+            logger.warning(f"Page quota exceeded for user {file_info.user_id}: {error_msg}")
+            if parsing_id:
+                supabase.table("file_parsings").update({
+                    "status": "failed",
+                    "job_completion": 0,
+                    "error_message": "Page limit reached"
+                }).eq("parsing_id", parsing_id).execute()
+            return {"error": "Page limit reached"}
+
         # Delete existing page/sentence data for idempotency
         wu.delete_file_pages(file_id, supabase)
 

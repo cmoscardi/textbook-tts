@@ -85,6 +85,8 @@ serve(async (req) => {
       )
     }
 
+    // Quota enforcement is handled by the ML worker at parse time (page-based limits)
+
     // Call the ML service with just the file_id
     // The ML service will handle fetching file metadata and generating signed URLs
     const mlServiceHost = Deno.env.get('MLSERVICE_HOST') ?? 'http://localhost:5000'
