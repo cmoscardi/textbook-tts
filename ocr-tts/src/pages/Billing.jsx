@@ -142,7 +142,7 @@ export default function Billing() {
     );
   }
 
-  const usagePercentage = usage ? (usage.conversions_used / usage.conversion_limit) * 100 : 0;
+  const usagePercentage = usage ? (usage.pages_used / usage.page_limit) * 100 : 0;
   const isPro = profile?.subscription_tier === 'pro';
   const isActive = profile?.subscription_status === 'active';
 
@@ -196,7 +196,7 @@ export default function Billing() {
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-lg font-semibold text-gray-700">Usage</h3>
             <span className="text-sm text-gray-600">
-              {usage?.conversions_used || 0} / {usage?.conversion_limit || 0} conversions ({formatPeriodLabel(usage?.period_type)})
+              {usage?.pages_used || 0} / {usage?.page_limit || 0} pages ({formatPeriodLabel(usage?.period_type)})
             </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
@@ -242,7 +242,7 @@ export default function Billing() {
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
                   <span className="text-gray-700">
-                    <strong>{config.free?.conversion_limit || 5}</strong> conversions {formatPeriodLabel(config.free?.period_type)}
+                    <strong>{config.free?.page_limit || 10}</strong> pages {formatPeriodLabel(config.free?.period_type)}
                   </span>
                 </li>
                 <li className="flex items-start">
@@ -276,7 +276,7 @@ export default function Billing() {
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
                   <span className="text-gray-700">
-                    <strong>{config.pro?.conversion_limit || 50}</strong> conversions {formatPeriodLabel(config.pro?.period_type)}
+                    <strong>{config.pro?.page_limit || 500}</strong> pages {formatPeriodLabel(config.pro?.period_type)}
                   </span>
                 </li>
                 <li className="flex items-start">

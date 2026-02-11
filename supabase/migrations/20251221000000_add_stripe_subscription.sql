@@ -1,6 +1,6 @@
 -- Migration: Add Stripe Subscription Support with Configurable Limits
 -- Description: Adds subscription tiers, usage tracking, and Stripe integration to support freemium model
--- Free tier: 5 conversions lifetime (configurable), Pro tier: 50 conversions/month (configurable)
+-- Free tier: 10 pages lifetime (configurable), Pro tier: 500 pages/month (configurable)
 -- All limits stored in database config table for easy adjustment
 
 -- ============================================================================
@@ -11,7 +11,7 @@
 CREATE TABLE subscription_config (
     config_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tier TEXT NOT NULL UNIQUE CHECK (tier IN ('free', 'pro')),
-    conversion_limit INTEGER NOT NULL,
+    page_limit INTEGER NOT NULL,
     period_type TEXT NOT NULL CHECK (period_type IN ('weekly', 'monthly', 'lifetime')),
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -32,9 +32,9 @@ CREATE TRIGGER subscription_config_updated_at
     EXECUTE FUNCTION update_subscription_config_updated_at();
 
 -- Insert default values
-INSERT INTO subscription_config (tier, conversion_limit, period_type) VALUES
-    ('free', 5, 'lifetime'),
-    ('pro', 50, 'monthly');
+INSERT INTO subscription_config (tier, page_limit, period_type) VALUES
+    ('free', 10, 'lifetime'),
+    ('pro', 500, 'monthly');
 
 -- RLS policies - only service role can modify, authenticated users can read
 ALTER TABLE subscription_config ENABLE ROW LEVEL SECURITY;
@@ -50,7 +50,7 @@ TO service_role
 USING (true)
 WITH CHECK (true);
 
-COMMENT ON TABLE subscription_config IS 'Configurable limits for subscription tiers. Free tier defaults to 5 lifetime conversions, Pro tier to 50 monthly.';
+COMMENT ON TABLE subscription_config IS 'Configurable limits for subscription tiers. Free tier defaults to 10 lifetime pages, Pro tier to 500 monthly.';
 
 -- ============================================================================
 -- 2. EXTEND user_profiles TABLE
@@ -84,15 +84,15 @@ COMMENT ON COLUMN user_profiles.cancel_at_period_end IS 'Whether subscription wi
 -- 3. CREATE usage_tracking TABLE
 -- ============================================================================
 
--- Track usage per user per period (supports weekly, monthly, and lifetime tracking)
+-- Track page usage per user per period (supports weekly, monthly, and lifetime tracking)
 CREATE TABLE usage_tracking (
     usage_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     period_type TEXT NOT NULL CHECK (period_type IN ('weekly', 'monthly', 'lifetime')),
     period_start TIMESTAMP NOT NULL,
     period_end TIMESTAMP,  -- NULL for lifetime limits
-    conversions_used INTEGER NOT NULL DEFAULT 0,
-    conversion_limit INTEGER NOT NULL,
+    pages_used INTEGER NOT NULL DEFAULT 0,
+    page_limit INTEGER NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
@@ -134,7 +134,7 @@ TO service_role
 USING (true)
 WITH CHECK (true);
 
-COMMENT ON TABLE usage_tracking IS 'Tracks PDF conversion usage per user per period. Supports weekly, monthly, and lifetime tracking based on tier config.';
+COMMENT ON TABLE usage_tracking IS 'Tracks page parsing usage per user per period. Supports weekly, monthly, and lifetime tracking based on tier config.';
 
 -- ============================================================================
 -- 4. CREATE stripe_events TABLE
@@ -278,22 +278,22 @@ BEGIN
             period_type,
             period_start,
             period_end,
-            conversion_limit,
-            conversions_used
+            page_limit,
+            pages_used
         )
         VALUES (
             p_user_id,
             v_config.period_type,
             v_period_start,
             v_period_end,
-            v_config.conversion_limit,
+            v_config.page_limit,
             0
         )
         RETURNING * INTO v_usage;
     ELSE
         -- Update limit in case config changed
         UPDATE usage_tracking
-        SET conversion_limit = v_config.conversion_limit,
+        SET page_limit = v_config.page_limit,
             period_end = v_period_end  -- Update end date in case billing cycle changed
         WHERE usage_id = v_usage.usage_id
         RETURNING * INTO v_usage;
@@ -305,21 +305,21 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 COMMENT ON FUNCTION get_current_usage(UUID) IS 'Gets or creates the current usage record for a user based on their tier config. Free users get lifetime tracking, Pro users get period-based tracking.';
 
--- Function to check if user can convert (has quota available)
-CREATE OR REPLACE FUNCTION can_user_convert(p_user_id UUID)
+-- Function to check if user can parse a given number of pages (has quota available)
+CREATE OR REPLACE FUNCTION can_user_parse(p_user_id UUID, p_page_count INTEGER)
 RETURNS BOOLEAN AS $$
 DECLARE
     v_usage usage_tracking;
 BEGIN
     v_usage := get_current_usage(p_user_id);
-    RETURN v_usage.conversions_used < v_usage.conversion_limit;
+    RETURN v_usage.pages_used + p_page_count <= v_usage.page_limit;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION can_user_convert(UUID) IS 'Returns true if user has conversions remaining in current period';
+COMMENT ON FUNCTION can_user_parse(UUID, INTEGER) IS 'Returns true if user has enough page quota remaining for the given page count';
 
--- Function to increment usage counter
-CREATE OR REPLACE FUNCTION increment_usage(p_user_id UUID)
+-- Function to increment page usage counter
+CREATE OR REPLACE FUNCTION increment_page_usage(p_user_id UUID, p_page_count INTEGER)
 RETURNS usage_tracking AS $$
 DECLARE
     v_usage usage_tracking;
@@ -328,14 +328,14 @@ BEGIN
     v_usage := get_current_usage(p_user_id);
 
     -- Check if user has quota available
-    IF v_usage.conversions_used >= v_usage.conversion_limit THEN
-        RAISE EXCEPTION 'Conversion limit reached. Used: %, Limit: %',
-            v_usage.conversions_used, v_usage.conversion_limit;
+    IF v_usage.pages_used + p_page_count > v_usage.page_limit THEN
+        RAISE EXCEPTION 'Page limit reached. Used: %, Requested: %, Limit: %',
+            v_usage.pages_used, p_page_count, v_usage.page_limit;
     END IF;
 
-    -- Increment the counter
+    -- Increment the counter by page count
     UPDATE usage_tracking
-    SET conversions_used = conversions_used + 1
+    SET pages_used = pages_used + p_page_count
     WHERE usage_id = v_usage.usage_id
     RETURNING * INTO v_usage;
 
@@ -343,7 +343,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION increment_usage(UUID) IS 'Increments the conversion counter for the current period. Raises exception if limit reached.';
+COMMENT ON FUNCTION increment_page_usage(UUID, INTEGER) IS 'Increments the page usage counter for the current period. Raises exception if limit would be exceeded.';
 
 -- ============================================================================
 -- 6. GRANT PERMISSIONS
@@ -353,8 +353,8 @@ COMMENT ON FUNCTION increment_usage(UUID) IS 'Increments the conversion counter 
 GRANT EXECUTE ON FUNCTION get_subscription_config(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION calculate_period_boundaries(TEXT, TIMESTAMP, TIMESTAMP, TIMESTAMP) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_current_usage(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION can_user_convert(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION increment_usage(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION can_user_parse(UUID, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION increment_page_usage(UUID, INTEGER) TO service_role;
 
--- Note: increment_usage is only granted to service_role to prevent abuse
--- It should only be called from edge functions after proper authorization
+-- Note: increment_page_usage is only granted to service_role to prevent abuse
+-- It should only be called from the ML worker after proper authorization
