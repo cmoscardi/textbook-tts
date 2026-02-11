@@ -463,14 +463,14 @@ export default function Files() {
       )}
 
       {/* Upgrade Banner - Show when at limit */}
-      {usage && usage.conversions_used >= usage.conversion_limit && profile?.subscription_tier !== 'pro' && (
+      {usage && usage.pages_used >= usage.page_limit && profile?.subscription_tier !== 'pro' && (
         <div className="mb-6 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg p-6 shadow-lg">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <h3 className="text-xl font-bold mb-2">Conversion Limit Reached</h3>
+              <h3 className="text-xl font-bold mb-2">Page Limit Reached</h3>
               <p className="text-blue-50">
-                You've used all {usage.conversion_limit} of your {usage.period_type === 'lifetime' ? 'lifetime' : usage.period_type} conversions.
-                Upgrade to Pro for {usage.period_type === 'monthly' ? '50 monthly' : 'more'} conversions!
+                You've used all {usage.page_limit} of your {usage.period_type === 'lifetime' ? 'lifetime' : usage.period_type} pages.
+                Upgrade to Pro for {usage.period_type === 'monthly' ? '500 monthly' : 'more'} pages!
               </p>
             </div>
             <Link
