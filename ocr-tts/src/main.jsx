@@ -1,3 +1,14 @@
+// Polyfill URL.parse for Safari < 18.2
+if (typeof URL.parse !== 'function') {
+  URL.parse = function(url, base) {
+    try {
+      return new URL(url, base);
+    } catch {
+      return null;
+    }
+  };
+}
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
