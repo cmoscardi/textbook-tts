@@ -18,7 +18,7 @@ serve(async (req) => {
 
   try {
     const body = await req.text()
-    const event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
+    const event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret)
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -126,16 +126,24 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
     return
   }
 
-  const periodChanged =
-    new Date(subscription.current_period_start * 1000).toISOString() !== profile.current_period_start
+  // Period fields may be on the subscription directly (older API versions)
+  // or on subscription items (newer API versions)
+  const item = subscription.items?.data?.[0]
+  const periodStartTs = (subscription as any).current_period_start ?? item?.current_period_start
+  const periodEndTs = (subscription as any).current_period_end ?? item?.current_period_end
+
+  const periodStart = periodStartTs ? new Date(periodStartTs * 1000).toISOString() : null
+  const periodEnd = periodEndTs ? new Date(periodEndTs * 1000).toISOString() : null
+
+  const periodChanged = periodStart !== profile.current_period_start
 
   // Update user profile with subscription details
   const { error: updateError } = await supabase.from('user_profiles')
     .update({
       subscription_tier: 'pro',
       subscription_status: subscription.status,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+      current_period_start: periodStart,
+      current_period_end: periodEnd,
       cancel_at_period_end: subscription.cancel_at_period_end
     })
     .eq('stripe_subscription_id', subscription.id)
@@ -148,7 +156,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
   // If billing period changed, create new usage tracking record
   // The get_current_usage function will handle this automatically on next call,
   // but we can pre-create it here for consistency
-  if (periodChanged) {
+  if (periodChanged && periodStart && periodEnd) {
     // Get subscription config for pro tier
     const { data: config } = await supabase
       .from('subscription_config')
@@ -157,10 +165,6 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
       .single()
 
     if (config) {
-      // Create new usage record for this period
-      const periodStart = new Date(subscription.current_period_start * 1000).toISOString()
-      const periodEnd = new Date(subscription.current_period_end * 1000).toISOString()
-
       await supabase.from('usage_tracking').insert({
         user_id: profile.user_id,
         period_type: config.period_type,
