@@ -142,6 +142,7 @@ export default function Billing() {
     );
   }
 
+  const isUnlimited = profile?.unlimited_access;
   const usagePercentage = usage ? (usage.pages_used / usage.page_limit) * 100 : 0;
   const isPro = profile?.subscription_tier === 'pro';
   const isActive = profile?.subscription_status === 'active';
@@ -167,9 +168,9 @@ export default function Billing() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">
-              {isPro ? 'Pro Plan' : 'Free Plan'}
+              {isUnlimited ? 'Unlimited Plan' : isPro ? 'Pro Plan' : 'Free Plan'}
             </h2>
-            {isPro && (
+            {isPro && !isUnlimited && (
               <p className="text-sm text-gray-600 mt-1">
                 Status: <span className={`font-semibold ${isActive ? 'text-green-600' : 'text-yellow-600'}`}>
                   {profile.subscription_status || 'Active'}
@@ -180,7 +181,7 @@ export default function Billing() {
               </p>
             )}
           </div>
-          {isPro && (
+          {isPro && !isUnlimited && (
             <button
               onClick={handleManageSubscription}
               disabled={portalLoading}
@@ -196,27 +197,32 @@ export default function Billing() {
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-lg font-semibold text-gray-700">Usage</h3>
             <span className="text-sm text-gray-600">
-              {usage?.pages_used || 0} / {usage?.page_limit || 0} pages ({formatPeriodLabel(usage?.period_type)})
+              {isUnlimited
+                ? `${usage?.pages_used || 0} pages used (unlimited)`
+                : `${usage?.pages_used || 0} / ${usage?.page_limit || 0} pages (${formatPeriodLabel(usage?.period_type)})`
+              }
             </span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
-            <div
-              className={`h-full transition-all duration-300 ${
-                usagePercentage >= 100 ? 'bg-red-500' :
-                usagePercentage >= 80 ? 'bg-orange-500' :
-                'bg-green-500'
-              }`}
-              style={{ width: `${Math.min(usagePercentage, 100)}%` }}
-            />
-          </div>
-          {usage?.period_end && (
+          {!isUnlimited && (
+            <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  usagePercentage >= 100 ? 'bg-red-500' :
+                  usagePercentage >= 80 ? 'bg-orange-500' :
+                  'bg-green-500'
+                }`}
+                style={{ width: `${Math.min(usagePercentage, 100)}%` }}
+              />
+            </div>
+          )}
+          {!isUnlimited && usage?.period_end && (
             <p className="text-sm text-gray-500 mt-2">
               Resets on {formatDate(usage.period_end)}
             </p>
           )}
         </div>
 
-        {isPro && profile.current_period_end && (
+        {!isUnlimited && isPro && profile.current_period_end && (
           <div className="mt-4 text-sm text-gray-600">
             <p>Current billing period ends: {formatDate(profile.current_period_end)}</p>
           </div>
@@ -224,7 +230,7 @@ export default function Billing() {
       </div>
 
       {/* Pricing Comparison */}
-      {!isPro && (
+      {!isPro && !isUnlimited && (
         <div className="bg-white rounded-lg shadow-md p-6">
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Upgrade to Pro</h2>
 
