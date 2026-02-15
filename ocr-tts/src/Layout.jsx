@@ -50,7 +50,32 @@ export default function Layout() {
     return (
       <Auth
         supabaseClient={supabase}
-        appearance={{ theme: ThemeSupa }}
+        appearance={{
+          theme: ThemeSupa,
+          variables: {
+            default: {
+              colors: {
+                brand: '#3b82f6',
+                brandAccent: '#2563eb',
+                inputBackground: '#1f2937',
+                inputBorder: '#374151',
+                inputBorderHover: '#4b5563',
+                inputBorderFocus: '#3b82f6',
+                inputText: '#f9fafb',
+                inputLabelText: '#d1d5db',
+                inputPlaceholder: '#9ca3af',
+              },
+            },
+          },
+          style: {
+            button: {
+              borderRadius: '0.375rem',
+            },
+            input: {
+              borderRadius: '0.375rem',
+            },
+          },
+        }}
         providers={[]}
         onlyThirdPartyProviders={false}
         redirectTo={`${window.location.origin}/reset-password`}
