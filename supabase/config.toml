@@ -4,3 +4,21 @@ schema_paths = [
   "./schemas/files.sql",
   "./schemas/*.sql"
 ]
+
+[functions.parse-file]
+verify_jwt = false
+
+[functions.convert-file]
+verify_jwt = false
+
+[functions.create-checkout-session]
+verify_jwt = false
+
+[functions.create-portal-session]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.play-sentence]
+verify_jwt = false
