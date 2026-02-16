@@ -30,6 +30,8 @@ RUN pip install python-doctr \
     supabase \
     pydub
 
+RUN pip install --no-cache-dir flash-attn
+
 # Copy application code
 COPY . .
 

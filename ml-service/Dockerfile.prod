@@ -34,6 +34,8 @@ RUN pip install --no-cache-dir \
     pydub \
     gunicorn
 
+RUN pip install --no-cache-dir flash-attn
+
 # Copy all Python application code
 COPY *.py ./
 
