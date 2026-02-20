@@ -32,6 +32,12 @@ RUN pip install python-doctr \
 
 RUN pip install --no-cache-dir flash-attn
 
+# Fix surya-ocr bug: get_image_embeddings slices wrong dimension when
+# FOUNDATION_STATIC_CACHE is enabled, causing "Mismatch in image embedding
+# seq len" assertion. The slice should be on dim 1 (sequence), not dim 0 (batch).
+RUN sed -i 's/chunk_embeddings\[:valid_embed_len\]\.squeeze(0)/chunk_embeddings[0, :valid_embed_len]/' \
+    $(python -c "import surya.common.surya; print(surya.common.surya.__file__)")
+
 # Copy application code
 COPY . .
 

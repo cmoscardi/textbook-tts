@@ -6,7 +6,7 @@ import re
 import time
 from celery import Celery
 import requests
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader
 from supabase import create_client, Client
 import worker_utils as wu
 from worker_utils import (
@@ -101,7 +101,7 @@ def initialize_parser_models():
 
     # Configure batch sizes to minimize VRAM usage
     config = {
-        "recognition_batch_size": 1,
+        "recognition_batch_size": 48,
         "layout_batch_size": 1,
         "detection_batch_size": 1,
         "ocr_error_batch_size": 1
@@ -419,24 +419,20 @@ def parse_pdf_task(file_id):
         for page_idx in range(total_pages):
             logger.info(f"Processing page {page_idx + 1}/{total_pages}")
 
-            # Extract single page to temp file
-            writer = PdfWriter()
-            writer.add_page(reader.pages[page_idx])
-            page_file = f"/tmp/download_{task_id}_page_{page_idx}.pdf"
-            with open(page_file, "wb") as f:
-                writer.write(f)
-
             try:
-                # Run marker on single page
-                document = pdf_converter.build_document(page_file)
+                # Tell marker to only process this single page from the original PDF.
+                # PdfProvider reads page_range from the config dict each time
+                # build_document creates a new provider instance.
+                pdf_converter.config["page_range"] = [page_idx]
+
+                document = pdf_converter.build_document(temp_file)  # full PDF, not extracted page
                 res = renderer(document)
                 page_text, _, page_images = text_from_rendered(res)
                 all_page_texts.append(page_text)
 
-                # Extract sentences + bboxes from this page's Document
                 page_data_list = extract_pages_and_sentences(document)
 
-                # Clean up GPU memory for this page
+                # Clean up GPU memory
                 del res, document
                 if page_images:
                     del page_images
@@ -467,13 +463,13 @@ def parse_pdf_task(file_id):
 
             except Exception as page_err:
                 logger.error(f"Failed to process page {page_idx}: {page_err}")
-            finally:
-                if os.path.exists(page_file):
-                    os.remove(page_file)
 
             # Update progress: 15% -> 85% proportional to pages
             progress = 15 + int(70 * (page_idx + 1) / total_pages)
             update_parsing_progress(parsing_id, progress, supabase=supabase)
+
+        # Reset page_range so it doesn't affect future calls
+        pdf_converter.config.pop("page_range", None)
 
         logger.info(f"Processed {total_pages} pages, {global_sequence} total sentences")
 
@@ -517,6 +513,8 @@ def parse_pdf_task(file_id):
 
     except Exception as e:
         logger.error(f"Error in parse_pdf_task: {str(e)}")
+        if pdf_converter and hasattr(pdf_converter, 'config') and pdf_converter.config:
+            pdf_converter.config.pop("page_range", None)
         if parsing_id:
             try:
                 update_data = {
