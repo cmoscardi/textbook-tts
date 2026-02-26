@@ -359,25 +359,24 @@ def parse_pdf_task(file_id):
         if not parsing_id:
             logger.warning("Could not create parsing record - continuing without database tracking")
 
-        # Check if CUDA devices are available
-        if not torch.cuda.is_available():
-            logger.warning("No CUDA device available - returning dev mode message")
-            if parsing_id:
-                finalize_parsing(parsing_id, file_id, "dev mode text", "completed", supabase=supabase)
-            return "no cuda device -- dev mode"
+        dev_mode = not torch.cuda.is_available()
+        if dev_mode:
+            logger.warning("No CUDA device available - running in dev mode")
+        else:
+            logger.info("CUDA device available, proceeding with parsing")
 
-        logger.info("CUDA device available, proceeding with parsing")
         update_parsing_progress(parsing_id, 5, "running", supabase=supabase)
 
-        # Clear GPU memory at task start to ensure maximum available memory
-        logger.info(f"GPU memory before clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.empty_cache()  # Call twice to help with fragmentation
-        torch.cuda.ipc_collect()  # Clean up inter-process shared memory
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.reset_accumulated_memory_stats()
-        logger.info(f"GPU memory after clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        if not dev_mode:
+            # Clear GPU memory at task start to ensure maximum available memory
+            logger.info(f"GPU memory before clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()  # Call twice to help with fragmentation
+            torch.cuda.ipc_collect()  # Clean up inter-process shared memory
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.reset_accumulated_memory_stats()
+            logger.info(f"GPU memory after clearing: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB, reserved={torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
         start = time.time()
 
@@ -394,12 +393,13 @@ def parse_pdf_task(file_id):
 
         update_parsing_progress(parsing_id, 10, supabase=supabase)
 
-        # Use singleton PDF converter
-        logger.info("Using singleton PDF converter (no reload)")
-        if pdf_converter is None:
-            # Dev mode fallback: initialize on-demand if not loaded at startup
-            logger.warning("Singleton not initialized, loading on-demand (dev mode)")
-            initialize_parser_models()
+        if not dev_mode:
+            # Use singleton PDF converter
+            logger.info("Using singleton PDF converter (no reload)")
+            if pdf_converter is None:
+                # Dev mode fallback: initialize on-demand if not loaded at startup
+                logger.warning("Singleton not initialized, loading on-demand (dev mode)")
+                initialize_parser_models()
 
         # Count total pages
         reader = PdfReader(temp_file)
@@ -429,70 +429,109 @@ def parse_pdf_task(file_id):
         # Delete existing page/sentence data for idempotency
         wu.delete_file_pages(file_id, supabase)
 
-        # Resolve renderer once (reused for all pages)
-        renderer = pdf_converter.resolve_dependencies(pdf_converter.renderer)
-
         all_page_texts = []
         global_sequence = 0
 
-        for page_idx in range(total_pages):
-            logger.info(f"Processing page {page_idx + 1}/{total_pages}")
-
-            # Extract single page to temp file
-            writer = PdfWriter()
-            writer.add_page(reader.pages[page_idx])
-            page_file = f"/tmp/download_{task_id}_page_{page_idx}.pdf"
-            with open(page_file, "wb") as f:
-                writer.write(f)
-
-            try:
-                # Run marker on single page
-                document = pdf_converter.build_document(page_file)
-                res = renderer(document)
-                page_text, _, page_images = text_from_rendered(res)
+        if dev_mode:
+            # Generate placeholder pages + sentences without GPU
+            for page_idx in range(total_pages):
+                logger.info(f"Dev mode: generating placeholder for page {page_idx + 1}/{total_pages}")
+                page_text = f"# Page {page_idx + 1}\n\nDev mode placeholder text for page {page_idx + 1}."
                 all_page_texts.append(page_text)
 
-                # Extract sentences + bboxes from this page's Document
-                page_data_list = extract_pages_and_sentences(document)
-
-                # Clean up GPU memory for this page
-                del res, document
-                if page_images:
-                    del page_images
-                gc.collect()
-                torch.cuda.empty_cache()
-
-                # Save page + sentences to DB immediately
-                if page_data_list:
-                    pd = page_data_list[0]
-                    page_id = wu.create_file_page(
-                        file_id=file_id,
-                        page_number=page_idx,
-                        width=pd["width"],
-                        height=pd["height"],
-                        markdown_text=page_text,
-                        supabase=supabase
-                    )
-                    if page_id and pd["sentences"]:
-                        rows = [{
+                page_id = wu.create_file_page(
+                    file_id=file_id,
+                    page_number=page_idx,
+                    width=612.0,
+                    height=792.0,
+                    markdown_text=page_text,
+                    supabase=supabase
+                )
+                if page_id:
+                    # bbox format: array of polygons, each polygon is [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                    rows = [
+                        {
                             "page_id": page_id,
                             "file_id": file_id,
-                            "text": s["text"],
-                            "sequence_number": global_sequence + i,
-                            "bbox": s["bbox"]
-                        } for i, s in enumerate(pd["sentences"])]
-                        wu.create_page_sentences_bulk(rows, supabase)
-                        global_sequence += len(rows)
+                            "text": f"Page {page_idx + 1}.",
+                            "sequence_number": global_sequence,
+                            "bbox": [[[50, 50], [250, 50], [250, 80], [50, 80]]]
+                        },
+                        {
+                            "page_id": page_id,
+                            "file_id": file_id,
+                            "text": f"Dev mode placeholder text for page {page_idx + 1}.",
+                            "sequence_number": global_sequence + 1,
+                            "bbox": [[[50, 100], [450, 100], [450, 120], [50, 120]]]
+                        },
+                    ]
+                    wu.create_page_sentences_bulk(rows, supabase)
+                    global_sequence += len(rows)
 
-            except Exception as page_err:
-                logger.error(f"Failed to process page {page_idx}: {page_err}")
-            finally:
-                if os.path.exists(page_file):
-                    os.remove(page_file)
+                progress = 15 + int(70 * (page_idx + 1) / total_pages)
+                update_parsing_progress(parsing_id, progress, supabase=supabase)
+        else:
+            # Resolve renderer once (reused for all pages)
+            renderer = pdf_converter.resolve_dependencies(pdf_converter.renderer)
 
-            # Update progress: 15% -> 85% proportional to pages
-            progress = 15 + int(70 * (page_idx + 1) / total_pages)
-            update_parsing_progress(parsing_id, progress, supabase=supabase)
+            for page_idx in range(total_pages):
+                logger.info(f"Processing page {page_idx + 1}/{total_pages}")
+
+                # Extract single page to temp file
+                writer = PdfWriter()
+                writer.add_page(reader.pages[page_idx])
+                page_file = f"/tmp/download_{task_id}_page_{page_idx}.pdf"
+                with open(page_file, "wb") as f:
+                    writer.write(f)
+
+                try:
+                    # Run marker on single page
+                    document = pdf_converter.build_document(page_file)
+                    res = renderer(document)
+                    page_text, _, page_images = text_from_rendered(res)
+                    all_page_texts.append(page_text)
+
+                    # Extract sentences + bboxes from this page's Document
+                    page_data_list = extract_pages_and_sentences(document)
+
+                    # Clean up GPU memory for this page
+                    del res, document
+                    if page_images:
+                        del page_images
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
+                    # Save page + sentences to DB immediately
+                    if page_data_list:
+                        pd = page_data_list[0]
+                        page_id = wu.create_file_page(
+                            file_id=file_id,
+                            page_number=page_idx,
+                            width=pd["width"],
+                            height=pd["height"],
+                            markdown_text=page_text,
+                            supabase=supabase
+                        )
+                        if page_id and pd["sentences"]:
+                            rows = [{
+                                "page_id": page_id,
+                                "file_id": file_id,
+                                "text": s["text"],
+                                "sequence_number": global_sequence + i,
+                                "bbox": s["bbox"]
+                            } for i, s in enumerate(pd["sentences"])]
+                            wu.create_page_sentences_bulk(rows, supabase)
+                            global_sequence += len(rows)
+
+                except Exception as page_err:
+                    logger.error(f"Failed to process page {page_idx}: {page_err}")
+                finally:
+                    if os.path.exists(page_file):
+                        os.remove(page_file)
+
+                # Update progress: 15% -> 85% proportional to pages
+                progress = 15 + int(70 * (page_idx + 1) / total_pages)
+                update_parsing_progress(parsing_id, progress, supabase=supabase)
 
         logger.info(f"Processed {total_pages} pages, {global_sequence} total sentences")
 

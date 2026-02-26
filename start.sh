@@ -36,5 +36,8 @@ docker network connect supabase_network_textbook-tts supabase_edge_runtime_textb
 echo "Services started successfully!"
 echo "Edge Functions available at: http://localhost:54321/functions/v1/"
 
+echo "Starting Stripe listener..."
+stripe listen --forward-to localhost:54321/functions/v1/stripe-webhook
+
 # Keep script running (since supabase functions serve is in background)
 wait

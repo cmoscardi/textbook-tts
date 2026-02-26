@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 
@@ -13,6 +13,7 @@ export default function UploadSection({ onUploadComplete }) {
   const [parsingProgress, setParsingProgress] = useState(0);
   const [parsingJobId, setParsingJobId] = useState(null);
   const [uploadedFileId, setUploadedFileId] = useState(null);
+  const [pageLimitError, setPageLimitError] = useState(null);
   const pollingIntervalRef = useRef(null);
 
   // Cleanup polling interval on unmount
@@ -30,6 +31,7 @@ export default function UploadSection({ onUploadComplete }) {
 
     setSelectedFile(file);
     setUploadStatus('');
+    setPageLimitError(null);
     setIsParsing(false);
     setParsingProgress(0);
 
@@ -135,10 +137,25 @@ export default function UploadSection({ onUploadComplete }) {
             navigate(`/app/view/${file_id}`);
           }, 500);
         } else if (status === 'failed') {
-          setUploadStatus(`Parsing failed: ${data.error_message || 'Unknown error'}`);
           setIsParsing(false);
           clearInterval(pollingIntervalRef.current);
           pollingIntervalRef.current = null;
+
+          if (data.error_message === 'Page limit reached' && session?.user) {
+            try {
+              const { data: usageData } = await supabase
+                .rpc('get_current_usage', { p_user_id: session.user.id });
+              if (usageData) {
+                const remaining = Math.max(0, usageData.page_limit - usageData.pages_used);
+                setPageLimitError({ remaining });
+                setUploadStatus('');
+                return;
+              }
+            } catch (err) {
+              console.error('Error fetching usage for error message:', err);
+            }
+          }
+          setUploadStatus(`Parsing failed: ${data.error_message || 'Unknown error'}`);
         } else if (status === 'running' && job_completion > 15) {
           // First page is ready — navigate to FileViewer for progressive display
           setUploadStatus('First page ready! Opening file...');
@@ -271,6 +288,13 @@ export default function UploadSection({ onUploadComplete }) {
                 style={{ width: `${parsingProgress}%` }}
               ></div>
             </div>
+          </div>
+        )}
+
+        {pageLimitError && (
+          <div className="text-sm p-2 rounded text-red-700 bg-red-100">
+            This file has too many pages. You have {pageLimitError.remaining} pages remaining.
+            You can also <Link to="/app/billing" className="underline font-semibold text-blue-600 hover:text-blue-800">upgrade to pro</Link> to process this file.
           </div>
         )}
 

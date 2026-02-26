@@ -15,6 +15,7 @@ export default function FileViewer() {
   const [audioUrl, setAudioUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [pageLimitError, setPageLimitError] = useState(null);
   const pollingIntervalRef = useRef(null);
   const currentJobIdRef = useRef(null);
   const isMountedRef = useRef(true);
@@ -255,7 +256,7 @@ export default function FileViewer() {
       // Check parsing status
       const { data: parsingData, error: parsingError } = await supabase
         .from('file_parsings')
-        .select('status, job_completion')
+        .select('status, job_completion, error_message')
         .eq('file_id', fileId)
         .order('created_at', { ascending: false })
         .limit(1)
@@ -342,6 +343,19 @@ export default function FileViewer() {
           parsingPollingRef.current = null;
         }
         setIsParsingInProgress(false);
+        if (parsingData.error_message === 'Page limit reached' && session?.user) {
+          try {
+            const { data: usageData } = await supabase
+              .rpc('get_current_usage', { p_user_id: session.user.id });
+            if (usageData) {
+              const remaining = Math.max(0, usageData.page_limit - usageData.pages_used);
+              setPageLimitError({ remaining });
+              return;
+            }
+          } catch (err) {
+            console.error('Error fetching usage for error message:', err);
+          }
+        }
         setError('Parsing failed. Please try uploading the file again.');
       }
     } catch (err) {
@@ -552,6 +566,20 @@ export default function FileViewer() {
           // Start polling for more pages
           startParsingPolling();
         } else if (parsingData && parsingData.status === 'failed') {
+          if (parsingData.error_message === 'Page limit reached' && session?.user) {
+            try {
+              const { data: usageData } = await supabase
+                .rpc('get_current_usage', { p_user_id: session.user.id });
+              if (usageData) {
+                const remaining = Math.max(0, usageData.page_limit - usageData.pages_used);
+                setPageLimitError({ remaining });
+                setLoading(false);
+                return;
+              }
+            } catch (err) {
+              console.error('Error fetching usage for error message:', err);
+            }
+          }
           setError('Parsing failed. Please try uploading the file again.');
           return;
         } else {
@@ -688,7 +716,7 @@ export default function FileViewer() {
     );
   }
 
-  if (error) {
+  if (error || pageLimitError) {
     return (
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
@@ -703,7 +731,12 @@ export default function FileViewer() {
           </Link>
         </div>
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
-          {error}
+          {pageLimitError ? (
+            <>
+              This file has too many pages. You have {pageLimitError.remaining} pages remaining.
+              You can also <Link to="/app/billing" className="underline font-semibold text-blue-600 hover:text-blue-800">upgrade to pro</Link> to process this file.
+            </>
+          ) : error}
         </div>
       </div>
     );

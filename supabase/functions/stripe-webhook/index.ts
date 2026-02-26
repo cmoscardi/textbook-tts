@@ -137,10 +137,15 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
 
   const periodChanged = periodStart !== profile.current_period_start
 
+  // Only grant pro tier for active/trialing subscriptions
+  const activeTier = ['active', 'trialing'].includes(subscription.status)
+    ? 'pro'
+    : 'free'
+
   // Update user profile with subscription details
   const { error: updateError } = await supabase.from('user_profiles')
     .update({
-      subscription_tier: 'pro',
+      subscription_tier: activeTier,
       subscription_status: subscription.status,
       current_period_start: periodStart,
       current_period_end: periodEnd,
