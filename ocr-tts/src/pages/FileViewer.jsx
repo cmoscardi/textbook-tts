@@ -712,7 +712,7 @@ export default function FileViewer() {
   if (!file) return null;
 
   return (
-    <div className="max-w-5xl mx-auto">
+    <div className={`max-w-5xl mx-auto${sentences.length > 0 ? ' pb-40' : ''}`}>
       {/* Header with back button and file info */}
       <div className="mb-6">
         <Link
@@ -820,9 +820,9 @@ export default function FileViewer() {
         </div>
       </div>
 
-      {/* Sentence Player */}
+      {/* Sentence Player — floating bar fixed to bottom of viewport */}
       {sentences.length > 0 && (
-        <div className="mb-6 bg-white shadow rounded-lg p-6">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-white shadow-xl rounded-2xl px-6 py-4 w-[min(640px,calc(100vw-2rem))]">
           <div className="flex flex-col items-center">
             {/* Large play/pause button */}
             <button

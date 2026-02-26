@@ -4,3 +4,8 @@ schema_paths = [
   "./schemas/files.sql",
   "./schemas/*.sql"
 ]
+
+[auth]
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/update-password"]
+
