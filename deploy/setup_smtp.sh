@@ -36,7 +36,7 @@ done
 
 echo "Configuring SMTP for project $PROJECT_REF..."
 
-response=$(curl --silent --show-error --fail-with-body \
+response=$(curl --silent --show-error --write-out "\n%{http_code}" \
   --request PATCH \
   --url "https://api.supabase.com/v1/projects/${PROJECT_REF}/config/auth" \
   --header "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
@@ -59,5 +59,14 @@ response=$(curl --silent --show-error --fail-with-body \
   )"
 )
 
+http_code="${response##*$'\n'}"
+body="${response%$'\n'*}"
+
+if [[ "$http_code" -ge 400 ]]; then
+  echo "Error: API returned HTTP $http_code" >&2
+  echo "$body" >&2
+  exit 1
+fi
+
 echo "Done. Supabase auth config updated:"
-echo "$response" | jq '{smtp_host, smtp_port, smtp_user, smtp_admin_email, smtp_sender_name}'
+echo "$body" | jq '{smtp_host, smtp_port, smtp_user, smtp_admin_email, smtp_sender_name}'
