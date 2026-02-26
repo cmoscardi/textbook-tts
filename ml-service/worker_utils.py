@@ -158,7 +158,7 @@ def create_page_sentences_bulk(sentences: list, supabase=None):
         return False
 
 
-def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed", raw_markdown: str = None, supabase=None):
+def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: str = "completed", raw_markdown: str = None, total_time: float = None, time_to_first_page: float = None, supabase=None):
     """Finalize a parsing job and update the files table with parsed text and raw markdown"""
     if not supabase or not parsing_id:
         return False
@@ -169,6 +169,10 @@ def finalize_parsing(parsing_id: str, file_id: str, parsed_text: str, status: st
             "job_completion": 100,
             "status": status
         }
+        if total_time is not None:
+            parsing_update["total_time"] = round(total_time, 3)
+        if time_to_first_page is not None:
+            parsing_update["time_to_first_page"] = round(time_to_first_page, 3)
         supabase.table("file_parsings").update(parsing_update).eq("parsing_id", parsing_id).execute()
 
         # Update files table with parsed text and raw markdown

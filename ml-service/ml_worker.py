@@ -415,6 +415,7 @@ def parse_pdf_task(file_id):
 
         all_page_texts = []
         global_sequence = 0
+        time_to_first_page = None
 
         for page_idx in range(total_pages):
             logger.info(f"Processing page {page_idx + 1}/{total_pages}")
@@ -461,6 +462,9 @@ def parse_pdf_task(file_id):
                         wu.create_page_sentences_bulk(rows, supabase)
                         global_sequence += len(rows)
 
+                    if page_idx == 0 and time_to_first_page is None:
+                        time_to_first_page = time.time() - start
+
             except Exception as page_err:
                 logger.error(f"Failed to process page {page_idx}: {page_err}")
 
@@ -489,8 +493,15 @@ def parse_pdf_task(file_id):
         update_parsing_progress(parsing_id, 95, supabase=supabase)
 
         # Save to database (both raw markdown and cleaned text)
+        total_time = time.time() - start
         logger.info(f"Saving parsed text and raw markdown to database")
-        finalize_parsing(parsing_id, file_id, parsed_text, "completed", raw_markdown=raw_markdown, supabase=supabase)
+        finalize_parsing(
+            parsing_id, file_id, parsed_text, "completed",
+            raw_markdown=raw_markdown,
+            total_time=total_time,
+            time_to_first_page=time_to_first_page,
+            supabase=supabase,
+        )
         update_parsing_progress(parsing_id, 100, supabase=supabase)
 
         # Clean up temporary file
@@ -498,9 +509,7 @@ def parse_pdf_task(file_id):
             os.remove(temp_file)
             logger.info(f"Cleaned up temporary file: {temp_file}")
 
-        end = time.time()
-        processing_time = end - start
-        logger.info(f"Parsing completed in {processing_time:.2f} seconds")
+        logger.info(f"Parsing completed in {total_time:.2f}s (first page: {time_to_first_page:.2f}s)")
 
         return {
             "status": "completed",
@@ -508,7 +517,8 @@ def parse_pdf_task(file_id):
             "text_length": len(parsed_text),
             "sentence_count": global_sequence,
             "page_count": total_pages,
-            "processing_time": processing_time
+            "total_time": total_time,
+            "time_to_first_page": time_to_first_page,
         }
 
     except Exception as e:
