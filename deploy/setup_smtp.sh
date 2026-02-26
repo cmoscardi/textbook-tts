@@ -44,7 +44,7 @@ response=$(curl --silent --show-error --write-out "\n%{http_code}" \
   --data "$(jq -n \
     --arg admin_email  "$smtp_admin_email" \
     --arg host         "$smtp_host" \
-    --argjson port     "$smtp_port" \
+    --arg port         "$smtp_port" \
     --arg user         "$smtp_user" \
     --arg pass         "$smtp_pass" \
     --arg sender_name  "$smtp_sender_name" \
