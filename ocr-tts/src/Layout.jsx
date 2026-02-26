@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Outlet, Link } from "react-router-dom";
 import { Auth } from '@supabase/auth-ui-react'
 import { ThemeSupa } from '@supabase/auth-ui-shared'
+import { Turnstile } from '@marsidev/react-turnstile'
 import { supabase } from './lib/supabase.js';
 import { useSession } from './lib/SessionContext.jsx';
 
@@ -10,6 +11,8 @@ export default function Layout() {
   const [userEnabled, setUserEnabled] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const turnstileRef = useRef(null);
 
   // Fetch user profile when session changes
   useEffect(() => {
@@ -47,13 +50,25 @@ export default function Layout() {
 
   if(!session) {
     return (
-      <Auth
-        supabaseClient={supabase}
-        appearance={{ theme: ThemeSupa }}
-        providers={[]}
-        onlyThirdPartyProviders={false}
-        redirectTo={`${window.location.origin}/reset-password`}
-      />
+      <div>
+        <Auth
+          supabaseClient={supabase}
+          appearance={{ theme: ThemeSupa }}
+          providers={[]}
+          onlyThirdPartyProviders={false}
+          redirectTo={`${window.location.origin}/reset-password`}
+          captchaToken={captchaToken}
+        />
+        <div className="flex justify-center mt-2">
+          <Turnstile
+            ref={turnstileRef}
+            siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
+            onSuccess={setCaptchaToken}
+            onExpire={() => setCaptchaToken('')}
+            onError={() => setCaptchaToken('')}
+          />
+        </div>
+      </div>
     );
   }
 
