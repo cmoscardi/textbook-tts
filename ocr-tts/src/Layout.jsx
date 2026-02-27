@@ -1,18 +1,131 @@
 import { useState, useEffect, useRef } from "react";
 import { Outlet, Link } from "react-router-dom";
-import { Auth } from '@supabase/auth-ui-react'
-import { ThemeSupa } from '@supabase/auth-ui-shared'
-import { Turnstile } from '@marsidev/react-turnstile'
+import { Turnstile } from '@marsidev/react-turnstile';
+
 import { supabase } from './lib/supabase.js';
 import { useSession } from './lib/SessionContext.jsx';
+
+function AuthForm() {
+  const [mode, setMode] = useState('sign_in'); // 'sign_in' | 'sign_up' | 'forgot_password'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const turnstileRef = useRef(null);
+
+  const resetCaptcha = () => {
+    turnstileRef.current?.reset();
+    setCaptchaToken('');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setMessage('');
+    setSubmitting(true);
+
+    try {
+      if (mode === 'sign_in') {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+          options: { captchaToken },
+        });
+        if (error) throw error;
+
+      } else if (mode === 'sign_up') {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { captchaToken },
+        });
+        if (error) throw error;
+        setMessage('Check your email for a confirmation link.');
+
+      } else if (mode === 'forgot_password') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/reset-password`,
+          options: { captchaToken },
+        });
+        if (error) throw error;
+        setMessage('Check your email for a password reset link.');
+      }
+    } catch (err) {
+      setError(err.message);
+      resetCaptcha();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputClass = "w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm";
+  const btnClass = "w-full py-2 px-4 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50";
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-sm">
+        <h2 className="text-xl font-bold text-gray-800 mb-6">
+          {mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Create account' : 'Reset password'}
+        </h2>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <input
+            type="email"
+            placeholder="Email address"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className={inputClass}
+          />
+
+          {mode !== 'forgot_password' && (
+            <input
+              type="password"
+              placeholder="Password"
+              required
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className={inputClass}
+            />
+          )}
+
+          <Turnstile
+            ref={turnstileRef}
+            siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
+            onSuccess={setCaptchaToken}
+            onExpire={resetCaptcha}
+            onError={resetCaptcha}
+          />
+
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          {message && <p className="text-green-600 text-sm">{message}</p>}
+
+          <button type="submit" disabled={submitting || !captchaToken} className={btnClass}>
+            {submitting ? 'Please wait...' : mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Sign up' : 'Send reset link'}
+          </button>
+        </form>
+
+        <div className="mt-4 flex flex-col gap-2 text-sm text-center">
+          {mode === 'sign_in' && (<>
+            <button onClick={() => { setMode('sign_up'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-600 hover:underline">Don't have an account? Sign up</button>
+            <button onClick={() => { setMode('forgot_password'); setError(''); setMessage(''); resetCaptcha(); }} className="text-gray-500 hover:underline">Forgot your password?</button>
+          </>)}
+          {mode !== 'sign_in' && (
+            <button onClick={() => { setMode('sign_in'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-600 hover:underline">Already have an account? Sign in</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Layout() {
   const { session, loading } = useSession();
   const [userEnabled, setUserEnabled] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [captchaToken, setCaptchaToken] = useState('');
-  const turnstileRef = useRef(null);
 
   // Fetch user profile when session changes
   useEffect(() => {
@@ -49,27 +162,7 @@ export default function Layout() {
   }
 
   if(!session) {
-    return (
-      <div>
-        <Auth
-          supabaseClient={supabase}
-          appearance={{ theme: ThemeSupa }}
-          providers={[]}
-          onlyThirdPartyProviders={false}
-          redirectTo={`${window.location.origin}/reset-password`}
-          captchaToken={captchaToken}
-        />
-        <div className="flex justify-center mt-2">
-          <Turnstile
-            ref={turnstileRef}
-            siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
-            onSuccess={setCaptchaToken}
-            onExpire={() => setCaptchaToken('')}
-            onError={() => setCaptchaToken('')}
-          />
-        </div>
-      </div>
-    );
+    return <AuthForm />;
   }
 
   // Check if user is disabled
