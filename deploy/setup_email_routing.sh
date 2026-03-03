@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Setup Cloudflare Email Routing to forward add@textbook-tts.com to the Worker.
-# Prerequisites:
-#   - CF API token with Zone:Email Routing Rules:Edit permission
-#   - The email worker must be deployed first:
-#     cd cloudflare/email-worker && npx wrangler secret put MLSERVICE_AUTH_KEY && npx wrangler deploy
+# Deploy the Cloudflare Email Worker and configure email routing.
+# Runs wrangler inside Docker so no local Node.js install is needed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env.production"
+REPO_ROOT="$SCRIPT_DIR/.."
+ENV_FILE="$REPO_ROOT/.env.production"
+WORKER_DIR="$REPO_ROOT/cloudflare/email-worker"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Error: $ENV_FILE not found" >&2
@@ -24,6 +23,7 @@ set +a
 required_vars=(
   CF_API_TOKEN
   CF_ZONE_ID
+  MLSERVICE_AUTH_KEY
 )
 
 for var in "${required_vars[@]}"; do
@@ -33,9 +33,27 @@ for var in "${required_vars[@]}"; do
   fi
 done
 
-echo "Configuring Email Routing for zone $CF_ZONE_ID..."
+IMAGE_NAME="textbook-tts-email-worker"
 
-# 1. Enable Email Routing on the zone (idempotent)
+# ---------- 1. Build the Docker image ----------
+echo "Building email worker Docker image..."
+docker build -t "$IMAGE_NAME" "$WORKER_DIR"
+
+# ---------- 2. Deploy the worker ----------
+echo "Deploying email worker to Cloudflare..."
+docker run --rm \
+  -e CLOUDFLARE_API_TOKEN="$CF_API_TOKEN" \
+  "$IMAGE_NAME" \
+  deploy
+
+# ---------- 3. Set the MLSERVICE_AUTH_KEY secret ----------
+echo "Setting MLSERVICE_AUTH_KEY secret..."
+echo "$MLSERVICE_AUTH_KEY" | docker run --rm -i \
+  -e CLOUDFLARE_API_TOKEN="$CF_API_TOKEN" \
+  "$IMAGE_NAME" \
+  secret put MLSERVICE_AUTH_KEY
+
+# ---------- 4. Enable Email Routing on the zone (idempotent) ----------
 echo "Enabling Email Routing..."
 response=$(curl --silent --show-error --write-out "\n%{http_code}" \
   --request PUT \
@@ -52,7 +70,7 @@ if [[ "$http_code" -ge 400 ]]; then
   echo "$body" >&2
 fi
 
-# 2. Create routing rule: add@textbook-tts.com -> Worker
+# ---------- 5. Create routing rule: add@textbook-tts.com -> Worker ----------
 echo "Creating email routing rule..."
 response=$(curl --silent --show-error --write-out "\n%{http_code}" \
   --request POST \
