@@ -1,9 +1,11 @@
 
+import base64
 import gc
 import logging
 import os
 import re
 import time
+from datetime import datetime
 from celery import Celery
 import requests
 from pypdf import PdfReader
@@ -42,6 +44,7 @@ app.conf.update(
     # Task routing configuration
     task_routes={
         'ml_worker.parse_pdf_task': {'queue': 'parse_queue'},
+        'ml_worker.ingest_email_task': {'queue': 'parse_queue'},
     },
 )
 
@@ -552,3 +555,153 @@ def parse_pdf_task(file_id):
                 pass
 
         raise e
+
+
+def extract_email_text(email_data: dict) -> str:
+    """Extract readable text from an email, preferring HTML (richer structure) with BS4."""
+    if email_data.get('html_body'):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(email_data['html_body'], 'html.parser')
+        for tag in soup(['script', 'style', 'header', 'footer', 'nav']):
+            tag.decompose()
+        return soup.get_text(separator='\n', strip=True)
+    return email_data.get('text_body') or ''
+
+
+def save_text_as_parsed(file_id, user_id, text):
+    """Save plain text directly as a parsed file (no OCR needed)."""
+    task_id = f"email-ingest-{file_id}"
+    parsing_id = create_parsing_record(file_id, task_id, supabase)
+
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    # Merge short sentences (<150 chars) with the next one
+    merged = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if merged and len(merged[-1]) < 150:
+            merged[-1] += ' ' + s
+        else:
+            merged.append(s)
+    if len(merged) >= 2 and len(merged[-1]) < 150:
+        merged[-2] += ' ' + merged[-1]
+        merged.pop()
+
+    # Create single page record (width/height 0 — no PDF dimensions)
+    page_id = wu.create_file_page(
+        file_id=file_id, page_number=0, width=0, height=0,
+        markdown_text=text, supabase=supabase
+    )
+
+    # Create sentence records
+    if page_id and merged:
+        rows = [{
+            "page_id": page_id,
+            "file_id": file_id,
+            "text": s,
+            "sequence_number": i,
+            "bbox": []
+        } for i, s in enumerate(merged)]
+        wu.create_page_sentences_bulk(rows, supabase)
+
+    # Finalize
+    finalize_parsing(parsing_id, file_id, text, "completed",
+                     raw_markdown=text, supabase=supabase)
+
+
+def schedule_presynthesis(file_id):
+    """Pre-synthesize first 5 sentences (fire-and-forget to warm TTS model)."""
+    try:
+        from task_client import send_synthesize_task
+        sentences = supabase.table('page_sentences').select('text') \
+            .eq('file_id', file_id).order('sequence_number').limit(5).execute()
+        for s in (sentences.data or []):
+            send_synthesize_task(s['text'])
+    except Exception as e:
+        logger.warning(f"Pre-synthesis scheduling failed (non-fatal): {e}")
+
+
+@app.task()
+def ingest_email_task(email_data: dict):
+    """Process an inbound email: look up user, create file, parse, pre-synthesize."""
+    sender = email_data['sender']
+    logger.info(f"Starting ingest_email_task for sender: {sender}")
+
+    try:
+        # 1. Look up user by email
+        user = supabase.rpc('get_user_by_email', {'email_addr': sender}).execute()
+        if not user.data:
+            logger.warning(f"No user found for sender: {sender}")
+            return {"status": "rejected", "reason": "unknown_sender"}
+
+        user_id = user.data[0]['user_id']
+
+        # Check user_profiles.enabled
+        profile = supabase.table('user_profiles').select('enabled') \
+            .eq('user_id', user_id).single().execute()
+        if not profile.data or not profile.data['enabled']:
+            logger.warning(f"User disabled for sender: {sender}")
+            return {"status": "rejected", "reason": "user_disabled"}
+
+        # 2. Determine content type and prepare file bytes
+        text = None
+        if email_data['has_attachment'] and email_data.get('attachment_base64'):
+            file_bytes = base64.b64decode(email_data['attachment_base64'])
+            filename = email_data.get('attachment_filename') or f"{email_data['subject']}.pdf"
+            mime_type = 'application/pdf'
+        else:
+            text = extract_email_text(email_data)
+            if not text:
+                logger.warning(f"Empty email body from sender: {sender}")
+                return {"status": "rejected", "reason": "empty_content"}
+            filename = f"{email_data['subject']}.txt"
+            file_bytes = text.encode('utf-8')
+            mime_type = 'text/plain'
+
+        # 3. Upload to Supabase Storage
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        storage_path = f"{user_id}/{timestamp}_{filename}"
+        supabase.storage.from_('files').upload(
+            storage_path, file_bytes,
+            file_options={"content-type": mime_type}
+        )
+
+        # Set storage owner
+        try:
+            supabase.rpc('update_storage_owner', {
+                'file_path': storage_path,
+                'bucket_name': 'files',
+                'new_owner_id': user_id
+            }).execute()
+        except Exception as owner_err:
+            logger.warning(f"Could not set storage owner: {owner_err}")
+
+        # 4. Create files table row
+        file_record = supabase.table('files').insert({
+            'user_id': user_id,
+            'file_name': filename,
+            'file_path': storage_path,
+            'file_size': len(file_bytes),
+            'mime_type': mime_type,
+        }).execute()
+        file_id = file_record.data[0]['file_id']
+        logger.info(f"Created file record {file_id} for sender: {sender}")
+
+        # 5. Parse
+        if mime_type == 'application/pdf':
+            parse_pdf_task.delay(file_id)
+        else:
+            save_text_as_parsed(file_id, user_id, text)
+
+        # 6. Pre-synthesize first 5 sentences (fire-and-forget)
+        schedule_presynthesis(file_id)
+
+        logger.info(f"ingest_email_task completed for sender: {sender}, file_id: {file_id}")
+        return {"status": "accepted", "file_id": file_id}
+
+    except Exception as e:
+        logger.error(f"Error in ingest_email_task for sender {sender}: {e}")
+        raise

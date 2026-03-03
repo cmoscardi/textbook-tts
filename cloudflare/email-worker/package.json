@@ -1,0 +1,16 @@
+{
+  "name": "textbook-tts-email-ingest",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "postal-mime": "^2.3.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241018.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.84.0"
+  }
+}

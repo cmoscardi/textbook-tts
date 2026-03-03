@@ -32,7 +32,8 @@ RUN pip install --no-cache-dir \
     pypdf \
     supabase \
     pydub \
-    gunicorn
+    gunicorn \
+    beautifulsoup4
 
 RUN pip install --no-cache-dir flash-attn
 

@@ -9,7 +9,7 @@ import time
 import os
 from typing import Annotated
 
-from task_client import send_parse_task, send_convert_task, send_synthesize_task
+from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task
 
 # Configure logging
 logging.basicConfig(
@@ -106,6 +106,16 @@ class SynthesizeRequest(BaseModel):
     text: str = Field(description="The sentence text to synthesize", max_length=2000)
 
 
+class IngestEmailRequest(BaseModel):
+    sender: str = Field(description="The email sender address")
+    subject: str = Field(description="The email subject line")
+    has_attachment: bool = Field(description="Whether a PDF attachment is present")
+    attachment_base64: str | None = None
+    attachment_filename: str | None = None
+    text_body: str | None = None
+    html_body: str | None = None
+
+
 
 
 @app.post("/parse")
@@ -183,3 +193,16 @@ def synthesize(request: SynthesizeRequest, auth: RequireAuth):
         media_type="audio/mpeg",
         headers={"X-Audio-Duration": str(duration)},
     )
+
+
+@app.post("/ingest-email")
+def ingest_email(request: IngestEmailRequest, auth: RequireAuth):
+    logger.info(f"Received ingest-email request from sender: {request.sender}")
+
+    try:
+        fut = send_ingest_email_task(request.model_dump())
+        logger.info(f"Created ingest-email task with ID: {fut.id} for sender: {request.sender}")
+        return {"id": fut.id, "task_type": "ingest_email"}
+    except Exception as e:
+        logger.error(f"Error creating ingest-email task for sender {request.sender}: {str(e)}")
+        raise

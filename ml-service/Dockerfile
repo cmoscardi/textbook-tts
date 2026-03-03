@@ -28,7 +28,8 @@ RUN pip install python-doctr \
     pypdf \
     jupyter watchdog \
     supabase \
-    pydub
+    pydub \
+    beautifulsoup4
 
 RUN pip install --no-cache-dir flash-attn
 

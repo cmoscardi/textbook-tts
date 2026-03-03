@@ -25,6 +25,7 @@ client_app.conf.update(
 PARSE_PDF_TASK = 'ml_worker.parse_pdf_task'
 CONVERT_TO_AUDIO_TASK = 'supertonic_worker.convert_to_audio_task'
 SYNTHESIZE_SENTENCE_TASK = 'supertonic_worker.synthesize_sentence_task'
+INGEST_EMAIL_TASK = 'ml_worker.ingest_email_task'
 
 def send_parse_task(file_id: str):
     """Send PDF parsing task to parser worker
@@ -72,4 +73,20 @@ def send_synthesize_task(text: str):
         SYNTHESIZE_SENTENCE_TASK,
         args=[text],
         queue='synthesize_queue'
+    )
+
+def send_ingest_email_task(email_data: dict):
+    """Send email ingestion task to parser worker
+
+    Args:
+        email_data: Dict with sender, subject, attachment data, text/html body
+
+    Returns:
+        AsyncResult: Celery task result object with .id and other methods
+    """
+    logger.info(f"Sending ingest-email task for sender: {email_data.get('sender')}")
+    return client_app.send_task(
+        INGEST_EMAIL_TASK,
+        args=[email_data],
+        queue='parse_queue'
     )
