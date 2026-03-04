@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import DOMPurify from 'dompurify';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 import PdfOverlayViewer from '../components/PdfOverlayViewer.jsx';
@@ -633,6 +634,24 @@ export default function FileViewer() {
   const displayMarkdown = file?.raw_markdown
     || (pageMarkdowns.length > 0 ? pageMarkdowns.join('\n\n') : null);
 
+  // Sanitize HTML for rendering (only computed when mime_type is text/html)
+  const sanitizedHtml = useMemo(() => {
+    if (file?.mime_type !== 'text/html' || !file?.raw_markdown) return '';
+    return DOMPurify.sanitize(file.raw_markdown, {
+      ALLOWED_TAGS: [
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr',
+        'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+        'strong', 'em', 'b', 'i', 'u', 's', 'sub', 'sup', 'mark',
+        'a', 'img', 'figure', 'figcaption',
+        'blockquote', 'pre', 'code',
+        'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+        'div', 'span', 'section', 'article', 'header', 'footer',
+      ],
+      ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'colspan', 'rowspan'],
+      ALLOW_DATA_ATTR: false,
+    });
+  }, [file?.mime_type, file?.raw_markdown]);
+
   // --- Helpers ---
 
   const formatDate = (dateString) => {
@@ -967,6 +986,35 @@ export default function FileViewer() {
                   </svg>
                   <span className="text-sm">Parsing more pages... {parsingProgress}% complete</span>
                 </div>
+              </div>
+            )}
+          </>
+        ) : file?.mime_type === 'text/html' && file?.raw_markdown ? (
+          <>
+            {/* Rendered HTML email */}
+            <article
+              className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600"
+              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+            />
+            {/* Interactive sentence transcript for playback */}
+            {sentences.length > 0 && (
+              <div className="mt-8 pt-6 border-t border-gray-200">
+                <h3 className="text-sm font-medium text-gray-500 mb-3">Sentence navigator</h3>
+                <TextSentenceViewer
+                  sentences={sentences}
+                  currentSentenceIdx={currentSentenceIdx}
+                  onSentenceClick={(idx) => {
+                    setCurrentSentenceIdx(idx);
+                    if (isPlaying) {
+                      stopRequestedRef.current = true;
+                      if (currentAudioRef.current) {
+                        currentAudioRef.current.pause();
+                        currentAudioRef.current = null;
+                      }
+                      setTimeout(() => playFromIndex(idx), 50);
+                    }
+                  }}
+                />
               </div>
             )}
           </>

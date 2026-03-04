@@ -568,8 +568,15 @@ def extract_email_text(email_data: dict) -> str:
     return email_data.get('text_body') or ''
 
 
-def save_text_as_parsed(file_id, user_id, text):
-    """Save plain text directly as a parsed file (no OCR needed)."""
+def save_text_as_parsed(file_id, user_id, text, raw_html=None):
+    """Save plain text directly as a parsed file (no OCR needed).
+
+    Args:
+        file_id: UUID of the file record
+        user_id: UUID of the owning user
+        text: Plain text extracted from the email (used for sentences/TTS)
+        raw_html: If the email was HTML, the original HTML body (stored in raw_markdown for rendering)
+    """
     task_id = f"email-ingest-{file_id}"
     parsing_id = create_parsing_record(file_id, task_id, supabase)
 
@@ -607,9 +614,9 @@ def save_text_as_parsed(file_id, user_id, text):
         } for i, s in enumerate(merged)]
         wu.create_page_sentences_bulk(rows, supabase)
 
-    # Finalize
+    # Finalize — store raw HTML in raw_markdown if available so frontend can render it
     finalize_parsing(parsing_id, file_id, text, "completed",
-                     raw_markdown=text, supabase=supabase)
+                     raw_markdown=raw_html or text, supabase=supabase)
 
 
 def schedule_presynthesis(file_id):
@@ -648,12 +655,23 @@ def ingest_email_task(email_data: dict):
 
         # 2. Determine content type and prepare file bytes
         text = None
+        raw_html = None
         if email_data['has_attachment'] and email_data.get('attachment_base64'):
             file_bytes = base64.b64decode(email_data['attachment_base64'])
             filename = email_data.get('attachment_filename') or f"{email_data['subject']}.pdf"
             mime_type = 'application/pdf'
-        else:
+        elif email_data.get('html_body'):
+            # HTML email — save original HTML for rendering, extract text for TTS
+            raw_html = email_data['html_body']
             text = extract_email_text(email_data)
+            if not text:
+                logger.warning(f"Empty email body from sender: {sender}")
+                return {"status": "rejected", "reason": "empty_content"}
+            filename = f"{email_data['subject']}.html"
+            file_bytes = raw_html.encode('utf-8')
+            mime_type = 'text/html'
+        else:
+            text = email_data.get('text_body') or ''
             if not text:
                 logger.warning(f"Empty email body from sender: {sender}")
                 return {"status": "rejected", "reason": "empty_content"}
@@ -694,7 +712,7 @@ def ingest_email_task(email_data: dict):
         if mime_type == 'application/pdf':
             parse_pdf_task.delay(file_id)
         else:
-            save_text_as_parsed(file_id, user_id, text)
+            save_text_as_parsed(file_id, user_id, text, raw_html=raw_html)
 
         # 6. Pre-synthesize first 5 sentences (fire-and-forget)
         schedule_presynthesis(file_id)
