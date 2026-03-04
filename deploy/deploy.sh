@@ -10,6 +10,15 @@ echo "ML Service Production Deployment"
 echo "Multi-GPU Setup (Main + Remote Host)"
 echo "========================================="
 
+# Parse flags
+BUILD_CACHE_FLAG="--no-cache"
+while getopts "c" opt; do
+    case $opt in
+        c) BUILD_CACHE_FLAG="" ;;
+        *) echo "Usage: $0 [-c]" && exit 1 ;;
+    esac
+done
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -174,7 +183,7 @@ npx supabase secrets set \
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
 echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
-docker compose -f "$COMPOSE_FILE" build --no-cache ml-api parser
+docker compose -f "$COMPOSE_FILE" build $BUILD_CACHE_FLAG ml-api parser
 
 echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
 docker compose -f "$COMPOSE_FILE" down
@@ -279,7 +288,7 @@ rsync -avz ${TEMP_REMOTE_COMPOSE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/${
 rm ${TEMP_REMOTE_COMPOSE}
 
 echo "Building and starting converter on remote host..."
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build --no-cache"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build $BUILD_CACHE_FLAG"
 ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} down"
 ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} up -d --force-recreate"
 
