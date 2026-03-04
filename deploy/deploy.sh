@@ -205,8 +205,8 @@ if [ "$FINAL_HEALTH" != "healthy" ]; then
     exit 1
 fi
 
-echo "Starting ML API and Parser..."
-docker compose -f "$COMPOSE_FILE" up -d ml-api parser
+echo "Starting ML API, Parser, and Cloudflare Tunnel..."
+docker compose -f "$COMPOSE_FILE" up -d ml-api parser cloudflared
 
 # Wait for ML API to be healthy
 WAITED=0
@@ -314,6 +314,7 @@ echo "Services running:"
 echo "  Main Host:"
 echo "    - ml-api-prod     (port 8001)"
 echo "    - parser-prod     (GPU 0, parse_queue)"
+echo "    - cloudflared-prod (tunnel to ml-tunnel.textbook-tts.com)"
 echo "    - rabbitmq-prod   (port 5672 on ${MAIN_HOST_TUN0})"
 echo ""
 echo "  Remote Host (${REMOTE_HOST}):"

@@ -71,6 +71,19 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-prod
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
+    networks:
+      - ml_network
+    depends_on:
+      ml-api:
+        condition: service_healthy
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq-prod
