@@ -112,6 +112,10 @@ export default function FileViewer() {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        // Resume audio that Safari paused when the tab was hidden
+        if (currentAudioRef.current && currentAudioRef.current.paused && isPlaying && !stopRequestedRef.current) {
+          currentAudioRef.current.play().catch(() => {});
+        }
         if (conversion && conversion.job_id &&
             (conversion.status === 'pending' || conversion.status === 'running')) {
           console.log('Page visible - forcing conversion status check');
@@ -129,7 +133,7 @@ export default function FileViewer() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [conversion, isParsingInProgress]);
+  }, [conversion, isParsingInProgress, isPlaying]);
 
   // --- Conversion polling (existing) ---
 
@@ -433,19 +437,24 @@ export default function FileViewer() {
       currentAudioRef.current = audio;
 
       await new Promise((resolve) => {
-        const done = () => {
-          audio.removeEventListener('ended', done);
-          audio.removeEventListener('error', done);
-          audio.removeEventListener('pause', done);
-          resolve();
+        const cleanup = () => {
+          audio.removeEventListener('ended', onEnded);
+          audio.removeEventListener('error', onEnded);
+          audio.removeEventListener('pause', onPause);
         };
-        audio.addEventListener('ended', done);
-        audio.addEventListener('error', done);
-        // Resolve on pause so external stop (handlePlayPause) unblocks the loop
-        audio.addEventListener('pause', done);
+        const onEnded = () => { cleanup(); resolve(); };
+        const onPause = () => {
+          // Only resolve if the user requested a stop.
+          // Safari fires pause when switching tabs — ignore that so we
+          // don't skip ahead. The visibility-change handler will resume.
+          if (stopRequestedRef.current) { cleanup(); resolve(); }
+        };
+        audio.addEventListener('ended', onEnded);
+        audio.addEventListener('error', onEnded);
+        audio.addEventListener('pause', onPause);
         audio.play().catch((err) => {
           console.error('Audio play() rejected:', err);
-          done();
+          cleanup(); resolve();
         });
       });
 
