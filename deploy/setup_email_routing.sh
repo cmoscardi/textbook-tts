@@ -41,6 +41,7 @@ docker build -t "$IMAGE_NAME" "$WORKER_DIR"
 
 # ---------- 2. Deploy the worker ----------
 echo "Deploying email worker to Cloudflare..."
+echo $CF_API_TOKEN
 docker run --rm \
   -e CLOUDFLARE_API_TOKEN="$CF_API_TOKEN" \
   "$IMAGE_NAME" \

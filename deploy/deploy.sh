@@ -174,7 +174,7 @@ npx supabase secrets set \
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
 echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
-docker compose -f "$COMPOSE_FILE" build ml-api parser
+docker compose -f "$COMPOSE_FILE" build --no-cache ml-api parser
 
 echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
 echo "Starting RabbitMQ..."
@@ -278,7 +278,7 @@ rsync -avz ${TEMP_REMOTE_COMPOSE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/${
 rm ${TEMP_REMOTE_COMPOSE}
 
 echo "Building and starting converter on remote host..."
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build --no-cache"
 ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} up -d"
 
 # Wait for Converter to be healthy
