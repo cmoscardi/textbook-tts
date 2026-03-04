@@ -177,8 +177,9 @@ echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
 docker compose -f "$COMPOSE_FILE" build --no-cache ml-api parser
 
 echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
+docker compose -f "$COMPOSE_FILE" down
 echo "Starting RabbitMQ..."
-docker compose -f "$COMPOSE_FILE" up -d rabbitmq
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate rabbitmq
 
 # Wait for RabbitMQ to be healthy
 MAX_WAIT=120
@@ -206,7 +207,7 @@ if [ "$FINAL_HEALTH" != "healthy" ]; then
 fi
 
 echo "Starting ML API, Parser, and Cloudflare Tunnel..."
-docker compose -f "$COMPOSE_FILE" up -d ml-api parser cloudflared
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate ml-api parser cloudflared
 
 # Wait for ML API to be healthy
 WAITED=0
@@ -279,7 +280,8 @@ rm ${TEMP_REMOTE_COMPOSE}
 
 echo "Building and starting converter on remote host..."
 ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build --no-cache"
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} up -d"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} down"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} up -d --force-recreate"
 
 # Wait for Converter to be healthy
 WAITED=0
