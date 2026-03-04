@@ -680,8 +680,11 @@ def ingest_email_task(email_data: dict):
             mime_type = 'text/plain'
 
         # 3. Upload to Supabase Storage
+        # Sanitize filename: strip non-ASCII, replace unsafe chars, collapse whitespace
+        safe_name = re.sub(r'[^\w\s\-.]', '', filename.encode('ascii', 'ignore').decode())
+        safe_name = re.sub(r'\s+', '_', safe_name).strip('_') or 'email'
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        storage_path = f"{user_id}/{timestamp}_{filename}"
+        storage_path = f"{user_id}/{timestamp}_{safe_name}"
         supabase.storage.from_('files').upload(
             storage_path, file_bytes,
             file_options={"content-type": mime_type}
