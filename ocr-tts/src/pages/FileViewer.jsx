@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 import PdfOverlayViewer from '../components/PdfOverlayViewer.jsx';
+import TextSentenceViewer from '../components/TextSentenceViewer.jsx';
 
 export default function FileViewer() {
   const { fileId } = useParams();
@@ -927,7 +928,7 @@ export default function FileViewer() {
             <p className="text-lg font-medium">Waiting for first page...</p>
             <p className="text-sm mt-1">Parsing progress: {parsingProgress}%</p>
           </div>
-        ) : pdfUrl && pages.length > 0 ? (
+        ) : file?.mime_type === 'application/pdf' && pdfUrl && pages.length > 0 ? (
           <>
             <PdfOverlayViewer
               pdfUrl={pdfUrl}
@@ -960,6 +961,24 @@ export default function FileViewer() {
               </div>
             )}
           </>
+        ) : sentences.length > 0 && file?.mime_type !== 'application/pdf' ? (
+          <article className="prose prose-lg max-w-none text-gray-900">
+            <TextSentenceViewer
+              sentences={sentences}
+              currentSentenceIdx={currentSentenceIdx}
+              onSentenceClick={(idx) => {
+                setCurrentSentenceIdx(idx);
+                if (isPlaying) {
+                  stopRequestedRef.current = true;
+                  if (currentAudioRef.current) {
+                    currentAudioRef.current.pause();
+                    currentAudioRef.current = null;
+                  }
+                  setTimeout(() => playFromIndex(idx), 50);
+                }
+              }}
+            />
+          </article>
         ) : displayMarkdown ? (
           <>
             <article className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600 prose-code:text-pink-700 prose-code:bg-pink-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-table:text-gray-800">
