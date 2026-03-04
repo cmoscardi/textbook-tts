@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase.js';
 import { useSession } from '../lib/SessionContext.jsx';
 import PdfOverlayViewer from '../components/PdfOverlayViewer.jsx';
 import TextSentenceViewer from '../components/TextSentenceViewer.jsx';
+import HtmlSentenceViewer from '../components/HtmlSentenceViewer.jsx';
 
 export default function FileViewer() {
   const { fileId } = useParams();
@@ -30,7 +31,7 @@ export default function FileViewer() {
   // PDF overlay state
   const [pages, setPages] = useState([]);
   const [pdfUrl, setPdfUrl] = useState(null);
-  const [showOriginalHtml, setShowOriginalHtml] = useState(false);
+
 
   // Sentence-by-sentence playback state
   const [sentences, setSentences] = useState([]);
@@ -990,53 +991,23 @@ export default function FileViewer() {
               </div>
             )}
           </>
-        ) : file?.mime_type === 'text/html' && file?.raw_markdown ? (
-          <>
-            {/* Toggle between reader view and original HTML */}
-            <div className="flex items-center gap-2 mb-4">
-              <button
-                onClick={() => setShowOriginalHtml(false)}
-                className={`px-3 py-1.5 text-sm rounded ${!showOriginalHtml ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-              >
-                Reader
-              </button>
-              <button
-                onClick={() => setShowOriginalHtml(true)}
-                className={`px-3 py-1.5 text-sm rounded ${showOriginalHtml ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-              >
-                Original
-              </button>
-            </div>
-            {showOriginalHtml ? (
-              <article
-                className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600"
-                dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-              />
-            ) : sentences.length > 0 ? (
-              <article className="prose prose-lg max-w-none text-gray-900">
-                <TextSentenceViewer
-                  sentences={sentences}
-                  currentSentenceIdx={currentSentenceIdx}
-                  onSentenceClick={(idx) => {
-                    setCurrentSentenceIdx(idx);
-                    if (isPlaying) {
-                      stopRequestedRef.current = true;
-                      if (currentAudioRef.current) {
-                        currentAudioRef.current.pause();
-                        currentAudioRef.current = null;
-                      }
-                      setTimeout(() => playFromIndex(idx), 50);
-                    }
-                  }}
-                />
-              </article>
-            ) : (
-              <article
-                className="prose prose-lg max-w-none text-gray-900 prose-headings:text-gray-900 prose-p:text-gray-800 prose-li:text-gray-800 prose-strong:text-gray-900 prose-a:text-blue-600"
-                dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-              />
-            )}
-          </>
+        ) : file?.mime_type === 'text/html' && sanitizedHtml ? (
+          <HtmlSentenceViewer
+            sanitizedHtml={sanitizedHtml}
+            sentences={sentences}
+            currentSentenceIdx={currentSentenceIdx}
+            onSentenceClick={(idx) => {
+              setCurrentSentenceIdx(idx);
+              if (isPlaying) {
+                stopRequestedRef.current = true;
+                if (currentAudioRef.current) {
+                  currentAudioRef.current.pause();
+                  currentAudioRef.current = null;
+                }
+                setTimeout(() => playFromIndex(idx), 50);
+              }
+            }}
+          />
         ) : sentences.length > 0 && file?.mime_type !== 'application/pdf' ? (
           <article className="prose prose-lg max-w-none text-gray-900">
             <TextSentenceViewer
