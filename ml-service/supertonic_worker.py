@@ -7,6 +7,7 @@ import time
 
 import worker_utils as wu
 from email_alerts import setup_email_logging, register_celery_failure_handler
+from prometheus_client import Counter, Histogram, start_http_server
 from worker_utils import (
     get_file_info,
     get_parsed_text,
@@ -29,6 +30,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 setup_email_logging()
+
+celery_tasks_total = Counter(
+    'celery_tasks_total', 'Total Celery tasks processed',
+    ['task_name', 'status']
+)
+celery_task_duration_seconds = Histogram(
+    'celery_task_duration_seconds', 'Celery task execution duration in seconds',
+    ['task_name']
+)
+
+try:
+    start_http_server(9092)
+    logger.info("Prometheus metrics server started on port 9092")
+except OSError as e:
+    logger.warning(f"Could not start Prometheus metrics server on port 9092: {e}")
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
@@ -66,6 +82,8 @@ def convert_to_audio_task(file_id):
     conversion_id = None
     temp_wav_file = None
     temp_mp3_file = None
+    _metric_start = time.time()
+    _status = 'success'
     try:
         # Get file information
         file_info = get_file_info(file_id, supabase)
@@ -169,6 +187,7 @@ def convert_to_audio_task(file_id):
         }
 
     except Exception as e:
+        _status = 'failed'
         logger.error(f"Error in convert_to_audio_task: {str(e)}")
         # clean memory
         gc.collect()
@@ -198,6 +217,9 @@ def convert_to_audio_task(file_id):
                 pass
 
         raise e
+    finally:
+        celery_tasks_total.labels(task_name='convert_to_audio_task', status=_status).inc()
+        celery_task_duration_seconds.labels(task_name='convert_to_audio_task').observe(time.time() - _metric_start)
 
 
 @app.task()
@@ -205,6 +227,8 @@ def synthesize_sentence_task(text):
     temp_wav_file = None
     temp_mp3_file = None
     task_id = synthesize_sentence_task.request.id
+    _metric_start = time.time()
+    _status = 'success'
     try:
         style = load_voice_style(["/supertonic/assets/voice_styles/M2.json"], verbose=False)
         wav, duration = text_to_speech(text, style, 15, 1.05)
@@ -227,7 +251,12 @@ def synthesize_sentence_task(text):
         logger.info(f"Synthesized sentence ({len(text)} chars, {duration_secs:.2f}s)")
         return {"audio_b64": audio_b64, "duration": duration_secs}
 
+    except Exception:
+        _status = 'failed'
+        raise
     finally:
+        celery_tasks_total.labels(task_name='synthesize_sentence_task', status=_status).inc()
+        celery_task_duration_seconds.labels(task_name='synthesize_sentence_task').observe(time.time() - _metric_start)
         if temp_wav_file and os.path.exists(temp_wav_file):
             os.remove(temp_wav_file)
         if temp_mp3_file and os.path.exists(temp_mp3_file):

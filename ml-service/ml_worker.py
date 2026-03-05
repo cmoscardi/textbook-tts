@@ -12,6 +12,7 @@ from pypdf import PdfReader
 from supabase import create_client, Client
 import worker_utils as wu
 from email_alerts import setup_email_logging, register_celery_failure_handler
+from prometheus_client import Counter, Histogram, start_http_server
 from worker_utils import (
     get_file_info,
     create_parsing_record,
@@ -27,6 +28,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 setup_email_logging()
+
+celery_tasks_total = Counter(
+    'celery_tasks_total', 'Total Celery tasks processed',
+    ['task_name', 'status']
+)
+celery_task_duration_seconds = Histogram(
+    'celery_task_duration_seconds', 'Celery task execution duration in seconds',
+    ['task_name']
+)
+
+try:
+    start_http_server(9091)
+    logger.info("Prometheus metrics server started on port 9091")
+except OSError as e:
+    logger.warning(f"Could not start Prometheus metrics server on port 9091: {e}")
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
@@ -352,6 +368,8 @@ def parse_pdf_task(file_id):
     task_id = parse_pdf_task.request.id
     parsing_id = None
     temp_file = None
+    _metric_start = time.time()
+    _status = 'success'
 
     try:
         # Get file information and signed URL
@@ -528,6 +546,7 @@ def parse_pdf_task(file_id):
         }
 
     except Exception as e:
+        _status = 'failed'
         logger.error(f"Error in parse_pdf_task: {str(e)}")
         if pdf_converter and hasattr(pdf_converter, 'config') and pdf_converter.config:
             pdf_converter.config.pop("page_range", None)
@@ -558,6 +577,9 @@ def parse_pdf_task(file_id):
                 pass
 
         raise e
+    finally:
+        celery_tasks_total.labels(task_name='parse_pdf_task', status=_status).inc()
+        celery_task_duration_seconds.labels(task_name='parse_pdf_task').observe(time.time() - _metric_start)
 
 
 def extract_email_text(email_data: dict) -> str:
@@ -639,6 +661,8 @@ def ingest_email_task(email_data: dict):
     """Process an inbound email: look up user, create file, parse, pre-synthesize."""
     sender = email_data['sender']
     logger.info(f"Starting ingest_email_task for sender: {sender}")
+    _metric_start = time.time()
+    _status = 'success'
 
     try:
         # 1. Look up user by email
@@ -727,5 +751,9 @@ def ingest_email_task(email_data: dict):
         return {"status": "accepted", "file_id": file_id}
 
     except Exception as e:
+        _status = 'failed'
         logger.error(f"Error in ingest_email_task for sender {sender}: {e}")
         raise
+    finally:
+        celery_tasks_total.labels(task_name='ingest_email_task', status=_status).inc()
+        celery_task_duration_seconds.labels(task_name='ingest_email_task').observe(time.time() - _metric_start)

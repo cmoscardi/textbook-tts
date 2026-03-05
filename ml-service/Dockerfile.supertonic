@@ -21,6 +21,6 @@ RUN git clone https://huggingface.co/Supertone/supertonic assets
 WORKDIR /supertonic/py
 RUN pip install -r requirements.txt
 RUN pip install pydub
-RUN pip install watchdog supabase celery sqlalchemy psycopg2 pydantic python-multipart
+RUN pip install watchdog supabase celery sqlalchemy psycopg2 pydantic python-multipart prometheus_client
 
 RUN apt-get update && apt-get install -y netcat-openbsd && rm -rf /var/lib/apt/lists/*

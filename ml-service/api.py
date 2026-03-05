@@ -11,6 +11,7 @@ from typing import Annotated
 
 from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task
 from email_alerts import setup_email_logging, send_alert
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Configure logging
 logging.basicConfig(
@@ -79,6 +80,8 @@ async def alert_on_error_response(request: Request, call_next):
         )
         send_alert(subject, body)
     return response
+
+Instrumentator().instrument(app).expose(app)
 
 logger.info("FastAPI application initialized with CORS enabled")
 

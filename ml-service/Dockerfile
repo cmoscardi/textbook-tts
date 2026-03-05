@@ -29,7 +29,9 @@ RUN pip install python-doctr \
     jupyter watchdog \
     supabase \
     pydub \
-    beautifulsoup4
+    beautifulsoup4 \
+    prometheus_client \
+    prometheus-fastapi-instrumentator
 
 RUN pip install --no-cache-dir flash-attn
 

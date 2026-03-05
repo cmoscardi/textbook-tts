@@ -83,11 +83,70 @@ services:
 
   rabbitmq:
     container_name: rabbitmq
-    image: rabbitmq:latest
+    image: rabbitmq:3-management
     ports:
       - 5672:5672
     env_file:
       - .env.development
+    volumes:
+      - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
+    networks:
+      - supabase_network_textbook-tts
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9090:9090"
+    networks:
+      - supabase_network_textbook-tts
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    depends_on:
+      - prometheus
+    networks:
+      - supabase_network_textbook-tts
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - supabase_network_textbook-tts
+
+  flower:
+    image: mher/flower:2.0
+    container_name: flower
+    command: celery --broker=amqp://guest@rabbitmq// flower --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - rabbitmq
     networks:
       - supabase_network_textbook-tts
 
@@ -110,3 +169,7 @@ networks:
   supabase_network_textbook-tts:
     external: true
     name: supabase_network_textbook-tts
+
+volumes:
+  prometheus_data:
+  grafana_data:

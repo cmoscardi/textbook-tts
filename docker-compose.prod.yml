@@ -93,6 +93,7 @@ services:
       # - "${MAIN_HOST_TUN0}:5672:5672"   # Bind AMQP to tun0 only (accessible from remote host)
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
     networks:
       - ml_network
     healthcheck:
@@ -106,6 +107,77 @@ services:
           memory: 2G
           cpus: '1.0'
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-prod
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=90d'
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - ml_network
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: grafana-prod
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    depends_on:
+      - prometheus
+    networks:
+      - ml_network
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter-prod
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - ml_network
+
+  gpu_exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.2.1
+    container_name: gpu_exporter-prod
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    networks:
+      - ml_network
+
+  flower:
+    image: mher/flower:2.0
+    container_name: flower-prod
+    restart: unless-stopped
+    command: celery --broker=amqp://guest@rabbitmq// flower --port=5555
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      - rabbitmq
+    networks:
+      - ml_network
+
 networks:
   ml_network:
     external: true
@@ -113,4 +185,8 @@ networks:
 
 volumes:
   rabbitmq_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
