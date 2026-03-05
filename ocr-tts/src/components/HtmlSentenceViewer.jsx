@@ -10,23 +10,31 @@ export default function HtmlSentenceViewer({
   const [hoveredIdx, setHoveredIdx] = useState(null);
   const marksRef = useRef(new Map()); // idx → [mark elements]
 
-  // 1. Render HTML and wrap sentences in <mark> elements
+  // Render HTML and wrap sentences in <mark> elements
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !sanitizedHtml) return;
 
-    // Set raw HTML first
     container.innerHTML = sanitizedHtml;
+    marksRef.current = new Map();
 
     if (sentences.length === 0) return;
 
-    // Collect all text nodes
+    // Collect all text nodes, inserting a space between nodes from different
+    // parents so that element boundaries (e.g. <br>, adjacent <p>) produce
+    // whitespace — matching the backend's BS4 get_text(separator='\n').
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const textNodes = [];
     let totalText = '';
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const text = node.textContent;
+      if (text.length === 0) continue;
+      // Insert a synthetic space between adjacent text nodes so that
+      // "end of para""start of next" becomes "end of para start of next"
+      if (totalText.length > 0 && !/\s$/.test(totalText) && !/^\s/.test(text)) {
+        totalText += ' ';
+      }
       textNodes.push({ node, start: totalText.length, length: text.length });
       totalText += text;
     }
@@ -35,8 +43,7 @@ export default function HtmlSentenceViewer({
     const normalize = (s) => s.replace(/\s+/g, ' ').trim();
     const normalizedTotal = normalize(totalText);
 
-    // Build a mapping from normalized-string positions back to original positions
-    // (needed because whitespace collapsing changes offsets)
+    // Build mapping from normalized-string positions back to original positions
     const normToOrig = [];
     let ni = 0;
     for (let oi = 0; oi < totalText.length && ni < normalizedTotal.length; oi++) {
@@ -61,47 +68,87 @@ export default function HtmlSentenceViewer({
       if (pos === -1) continue;
       const origStart = normToOrig[pos];
       const lastNormIdx = pos + normSent.length - 1;
-      const origEnd = (lastNormIdx < normToOrig.length ? normToOrig[lastNormIdx] : totalText.length - 1) + 1;
+      const origEnd = (lastNormIdx < normToOrig.length
+        ? normToOrig[lastNormIdx]
+        : totalText.length - 1) + 1;
       sentenceRanges.push({ sentIdx: i, origStart, origEnd });
       searchFrom = pos + normSent.length;
     }
 
-    // Wrap in reverse order to preserve earlier offsets
+    // Forward-pass: process each text node once, replacing it with a
+    // DocumentFragment of plain text + <mark> elements. No stale references
+    // because each node is visited exactly once then replaced.
     const newMarks = new Map();
-    for (let r = sentenceRanges.length - 1; r >= 0; r--) {
-      const { sentIdx, origStart, origEnd } = sentenceRanges[r];
+    let srIdx = 0;
 
-      const marks = [];
-      for (const tn of textNodes) {
-        const tnEnd = tn.start + tn.length;
-        if (tn.start >= origEnd || tnEnd <= origStart) continue;
+    for (const tn of textNodes) {
+      const nodeStart = tn.start;
+      const nodeEnd = tn.start + tn.length;
+      const nodeText = tn.node.textContent;
 
-        const localStart = Math.max(0, origStart - tn.start);
-        const localEnd = Math.min(tn.length, origEnd - tn.start);
+      // Collect segments (runs of plain text or sentence-marked text)
+      const segments = [];
+      let localPos = 0;
 
-        const range = document.createRange();
-        range.setStart(tn.node, localStart);
-        range.setEnd(tn.node, localEnd);
+      while (srIdx < sentenceRanges.length) {
+        const sr = sentenceRanges[srIdx];
+        if (sr.origStart >= nodeEnd) break; // sentence starts after this node
 
-        const mark = document.createElement('mark');
-        mark.dataset.sentenceIdx = sentIdx;
-        mark.className = 'sentence-mark cursor-pointer transition-colors rounded';
-        try {
-          range.surroundContents(mark);
-        } catch {
-          const fragment = range.extractContents();
-          mark.appendChild(fragment);
-          range.insertNode(mark);
+        // Skip sentences that ended before this node (shouldn't normally
+        // happen, but guard against it)
+        if (sr.origEnd <= nodeStart) { srIdx++; continue; }
+
+        const localStart = Math.max(0, sr.origStart - nodeStart);
+        const localEnd = Math.min(tn.length, sr.origEnd - nodeStart);
+
+        // Gap before this sentence
+        if (localStart > localPos) {
+          segments.push({ text: nodeText.slice(localPos, localStart), sentIdx: null });
         }
-        marks.push(mark);
+
+        // Sentence portion
+        segments.push({ text: nodeText.slice(localStart, localEnd), sentIdx: sr.sentIdx });
+        localPos = localEnd;
+
+        if (sr.origEnd <= nodeEnd) {
+          srIdx++; // sentence ends in this node, advance to next
+        } else {
+          break; // sentence continues into the next text node
+        }
       }
-      newMarks.set(sentIdx, marks);
+
+      // Trailing text after last sentence in this node
+      if (localPos < tn.length) {
+        segments.push({ text: nodeText.slice(localPos), sentIdx: null });
+      }
+
+      // If no sentence touches this node, skip — leave the DOM alone
+      if (segments.length === 0) continue;
+      if (segments.length === 1 && segments[0].sentIdx === null) continue;
+
+      // Replace the original text node with a fragment
+      const fragment = document.createDocumentFragment();
+      for (const seg of segments) {
+        if (seg.sentIdx !== null) {
+          const mark = document.createElement('mark');
+          mark.dataset.sentenceIdx = seg.sentIdx;
+          mark.className = 'sentence-mark cursor-pointer transition-colors rounded';
+          mark.textContent = seg.text;
+          fragment.appendChild(mark);
+          if (!newMarks.has(seg.sentIdx)) newMarks.set(seg.sentIdx, []);
+          newMarks.get(seg.sentIdx).push(mark);
+        } else {
+          fragment.appendChild(document.createTextNode(seg.text));
+        }
+      }
+
+      tn.node.parentNode.replaceChild(fragment, tn.node);
     }
 
     marksRef.current = newMarks;
   }, [sanitizedHtml, sentences]);
 
-  // 2. Update highlight classes when active/hovered sentence changes
+  // Update highlight classes when active/hovered sentence changes
   useEffect(() => {
     const marks = marksRef.current;
     marks.forEach((elements, idx) => {
@@ -116,7 +163,7 @@ export default function HtmlSentenceViewer({
     });
   }, [currentSentenceIdx, hoveredIdx]);
 
-  // 3. Auto-scroll to active sentence
+  // Auto-scroll to active sentence
   useEffect(() => {
     const marks = marksRef.current.get(currentSentenceIdx);
     if (marks && marks.length > 0) {
@@ -124,7 +171,7 @@ export default function HtmlSentenceViewer({
     }
   }, [currentSentenceIdx]);
 
-  // 4. Event delegation for clicks and hover
+  // Event delegation for clicks and hover
   const handleClick = useCallback((e) => {
     const mark = e.target.closest('mark[data-sentence-idx]');
     if (mark) {
