@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -10,6 +10,7 @@ import os
 from typing import Annotated
 
 from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task
+from email_alerts import setup_email_logging, send_alert
 
 # Configure logging
 logging.basicConfig(
@@ -17,6 +18,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+setup_email_logging()
 
 # Get auth key from environment
 MLSERVICE_AUTH_KEY = os.environ.get("MLSERVICE_AUTH_KEY")
@@ -62,6 +64,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def alert_on_error_response(request: Request, call_next):
+    response = await call_next(request)
+    if response.status_code >= 400:
+        subject = f"[ml-service] HTTP {response.status_code} {request.method} {request.url.path}"
+        body = (
+            f"Method : {request.method}\n"
+            f"Path   : {request.url.path}\n"
+            f"Query  : {request.url.query}\n"
+            f"Status : {response.status_code}\n"
+            f"Client : {request.client.host if request.client else 'unknown'}\n"
+        )
+        send_alert(subject, body)
+    return response
 
 logger.info("FastAPI application initialized with CORS enabled")
 

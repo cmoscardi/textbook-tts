@@ -11,6 +11,7 @@ import requests
 from pypdf import PdfReader
 from supabase import create_client, Client
 import worker_utils as wu
+from email_alerts import setup_email_logging, register_celery_failure_handler
 from worker_utils import (
     get_file_info,
     create_parsing_record,
@@ -25,6 +26,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+setup_email_logging()
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
@@ -47,6 +49,7 @@ app.conf.update(
         'ml_worker.ingest_email_task': {'queue': 'parse_queue'},
     },
 )
+register_celery_failure_handler(app)
 
 supabase = wu.initialize_supabase()
 
