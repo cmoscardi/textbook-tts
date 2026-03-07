@@ -24,6 +24,6 @@ download_dashboard() {
 
 download_dashboard 1860  "node_exporter_full"
 download_dashboard 10991 "rabbitmq_overview"
-download_dashboard 12239 "nvidia_gpu"
+download_dashboard 14574 "nvidia_gpu"
 
 echo "Done. Restart Grafana to pick up changes (or it will reload within 30s)."

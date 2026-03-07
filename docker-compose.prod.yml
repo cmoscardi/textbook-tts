@@ -157,7 +157,7 @@ services:
       - ml_network
 
   gpu_exporter:
-    image: utkuozdemir/nvidia_gpu_exporter:1.2.1
+    image: utkuozdemir/nvidia_gpu_exporter:1.1.0
     container_name: gpu_exporter-prod
     restart: unless-stopped
     runtime: nvidia
