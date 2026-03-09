@@ -143,7 +143,7 @@ export default function Billing() {
   }
 
   const usagePercentage = usage ? (usage.pages_used / usage.page_limit) * 100 : 0;
-  const isPro = profile?.subscription_tier === 'pro';
+  const isPro = profile?.subscription_tier === 'pro' || profile?.subscription_tier === 'unlimited';
   const isActive = profile?.subscription_status === 'active';
 
   return (
@@ -167,7 +167,7 @@ export default function Billing() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">
-              {isPro ? 'Pro Plan' : 'Free Plan'}
+              {profile?.subscription_tier === 'unlimited' ? 'Unlimited Plan' : isPro ? 'Pro Plan' : 'Free Plan'}
             </h2>
             {isPro && (
               <p className="text-sm text-gray-600 mt-1">
@@ -267,7 +267,7 @@ export default function Billing() {
               </div>
               <div className="text-center mb-4">
                 <h3 className="text-xl font-bold text-gray-900">Pro</h3>
-                <p className="text-3xl font-bold text-gray-900 mt-2">$9.99</p>
+                <p className="text-3xl font-bold text-gray-900 mt-2">$5.00</p>
                 <p className="text-sm text-gray-600">per month</p>
               </div>
               <ul className="space-y-3">

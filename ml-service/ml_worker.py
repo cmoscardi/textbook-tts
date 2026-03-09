@@ -385,9 +385,49 @@ def parse_pdf_task(file_id):
 
         # Check if CUDA devices are available
         if not torch.cuda.is_available():
-            logger.warning("No CUDA device available - returning dev mode message")
+            logger.warning("No CUDA device available - saving stub sentences for dev mode")
+            dev_text = "Dev mode: no CUDA device available. This is placeholder text for local development."
+
+            # Increment usage by 1 stub page
+            try:
+                supabase.rpc('increment_page_usage', {
+                    'p_user_id': file_info.user_id,
+                    'p_page_count': 1
+                }).execute()
+                logger.info(f"Page quota reserved for 1 stub page (dev mode)")
+            except Exception as quota_err:
+                logger.warning(f"Page quota exceeded for user {file_info.user_id}: {quota_err}")
+                if parsing_id:
+                    supabase.table("file_parsings").update({
+                        "status": "failed",
+                        "job_completion": 0,
+                        "error_message": "Page limit reached"
+                    }).eq("parsing_id", parsing_id).execute()
+                return {"error": "Page limit reached"}
+
+            wu.delete_file_pages(file_id, supabase)
+            page_id = wu.create_file_page(
+                file_id=file_id, page_number=0, width=612, height=792,
+                markdown_text=dev_text, supabase=supabase
+            )
+            if page_id:
+                sentences = re.split(r'(?<=[.!?])\s+', dev_text)
+                line_h, margin_x, start_y, spacing = 18, 72, 100, 26
+                rows = []
+                for i, s in enumerate(sentences):
+                    s = s.strip()
+                    if not s:
+                        continue
+                    y0 = start_y + i * spacing
+                    y1 = y0 + line_h
+                    bbox = [[[margin_x, y0], [612 - margin_x, y0],
+                              [612 - margin_x, y1], [margin_x, y1]]]
+                    rows.append({"page_id": page_id, "file_id": file_id, "text": s,
+                                 "sequence_number": i, "bbox": bbox})
+                wu.create_page_sentences_bulk(rows, supabase)
             if parsing_id:
-                finalize_parsing(parsing_id, file_id, "dev mode text", "completed", supabase=supabase)
+                finalize_parsing(parsing_id, file_id, dev_text, "completed",
+                                 raw_markdown=dev_text, supabase=supabase)
             return "no cuda device -- dev mode"
 
         logger.info("CUDA device available, proceeding with parsing")

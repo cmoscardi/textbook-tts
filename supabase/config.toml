@@ -13,3 +13,7 @@ additional_redirect_urls = ["http://localhost:5173/update-password"]
 enabled = true
 provider = "turnstile"
 secret = "1x0000000000000000000000000000000AA"
+
+# Stripe webhook uses its own signature verification, not JWTs
+[functions.stripe-webhook]
+verify_jwt = false

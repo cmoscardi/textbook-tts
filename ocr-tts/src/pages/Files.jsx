@@ -463,7 +463,7 @@ export default function Files() {
       )}
 
       {/* Upgrade Banner - Show when at limit */}
-      {usage && usage.pages_used >= usage.page_limit && profile?.subscription_tier !== 'pro' && (
+      {usage && usage.pages_used >= usage.page_limit && profile?.subscription_tier !== 'pro' && profile?.subscription_tier !== 'unlimited' && (
         <div className="mb-6 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg p-6 shadow-lg">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
