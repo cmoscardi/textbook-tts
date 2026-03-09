@@ -380,30 +380,44 @@ def parse_pdf_task(file_id):
 
         # Create parsing record in database
         parsing_id = create_parsing_record(file_id, task_id, supabase)
+        already_charged = False
         if not parsing_id:
-            logger.warning("Could not create parsing record - continuing without database tracking")
+            # 409 conflict — task was already started (e.g. worker restarted with task_acks_late).
+            # Check existing record to decide whether to skip or continue without re-charging.
+            existing = supabase.table("file_parsings").select("parsing_id,status").eq("file_id", file_id).execute()
+            if existing.data:
+                existing_record = existing.data[0]
+                if existing_record['status'] == 'completed':
+                    logger.info(f"File {file_id} already parsed successfully, skipping redelivered task")
+                    return {"status": "already_completed"}
+                parsing_id = existing_record['parsing_id']
+                already_charged = True  # usage was incremented in the first attempt
+                logger.warning(f"Redelivered task for file {file_id} (status={existing_record['status']}), skipping usage increment")
+            else:
+                logger.warning("Could not create parsing record - continuing without database tracking")
 
         # Check if CUDA devices are available
         if not torch.cuda.is_available():
             logger.warning("No CUDA device available - saving stub sentences for dev mode")
             dev_text = "Dev mode: no CUDA device available. This is placeholder text for local development."
 
-            # Increment usage by 1 stub page
-            try:
-                supabase.rpc('increment_page_usage', {
-                    'p_user_id': file_info.user_id,
-                    'p_page_count': 1
-                }).execute()
-                logger.info(f"Page quota reserved for 1 stub page (dev mode)")
-            except Exception as quota_err:
-                logger.warning(f"Page quota exceeded for user {file_info.user_id}: {quota_err}")
-                if parsing_id:
-                    supabase.table("file_parsings").update({
-                        "status": "failed",
-                        "job_completion": 0,
-                        "error_message": "Page limit reached"
-                    }).eq("parsing_id", parsing_id).execute()
-                return {"error": "Page limit reached"}
+            # Increment usage by 1 stub page (skip if this is a redelivered task)
+            if not already_charged:
+                try:
+                    supabase.rpc('increment_page_usage', {
+                        'p_user_id': file_info.user_id,
+                        'p_page_count': 1
+                    }).execute()
+                    logger.info(f"Page quota reserved for 1 stub page (dev mode)")
+                except Exception as quota_err:
+                    logger.warning(f"Page quota exceeded for user {file_info.user_id}: {quota_err}")
+                    if parsing_id:
+                        supabase.table("file_parsings").update({
+                            "status": "failed",
+                            "job_completion": 0,
+                            "error_message": "Page limit reached"
+                        }).eq("parsing_id", parsing_id).execute()
+                    return {"error": "Page limit reached"}
 
             wu.delete_file_pages(file_id, supabase)
             page_id = wu.create_file_page(
@@ -471,24 +485,27 @@ def parse_pdf_task(file_id):
         logger.info(f"PDF has {total_pages} pages")
         update_parsing_progress(parsing_id, 15, supabase=supabase)
 
-        # Check and increment page quota before any GPU work
-        logger.info(f"Checking page quota for user {file_info.user_id} ({total_pages} pages)")
-        try:
-            supabase.rpc('increment_page_usage', {
-                'p_user_id': file_info.user_id,
-                'p_page_count': total_pages
-            }).execute()
-            logger.info(f"Page quota reserved for {total_pages} pages")
-        except Exception as quota_err:
-            error_msg = str(quota_err)
-            logger.warning(f"Page quota exceeded for user {file_info.user_id}: {error_msg}")
-            if parsing_id:
-                supabase.table("file_parsings").update({
-                    "status": "failed",
-                    "job_completion": 0,
-                    "error_message": "Page limit reached"
-                }).eq("parsing_id", parsing_id).execute()
-            return {"error": "Page limit reached"}
+        # Check and increment page quota before any GPU work (skip if redelivered task)
+        if already_charged:
+            logger.info(f"Skipping page quota increment for redelivered task (file {file_id})")
+        else:
+            logger.info(f"Checking page quota for user {file_info.user_id} ({total_pages} pages)")
+            try:
+                supabase.rpc('increment_page_usage', {
+                    'p_user_id': file_info.user_id,
+                    'p_page_count': total_pages
+                }).execute()
+                logger.info(f"Page quota reserved for {total_pages} pages")
+            except Exception as quota_err:
+                error_msg = str(quota_err)
+                logger.warning(f"Page quota exceeded for user {file_info.user_id}: {error_msg}")
+                if parsing_id:
+                    supabase.table("file_parsings").update({
+                        "status": "failed",
+                        "job_completion": 0,
+                        "error_message": "Page limit reached"
+                    }).eq("parsing_id", parsing_id).execute()
+                return {"error": "Page limit reached"}
 
         # Delete existing page/sentence data for idempotency
         wu.delete_file_pages(file_id, supabase)

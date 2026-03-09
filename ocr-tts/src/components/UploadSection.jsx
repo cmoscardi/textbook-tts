@@ -108,7 +108,7 @@ export default function UploadSection({ onUploadComplete }) {
         .from('file_parsings')
         .select('*')
         .eq('job_id', jobId)
-        .single();
+        .maybeSingle();
 
       if (error) {
         console.error('Error checking parsing status:', error);

@@ -9,6 +9,9 @@ const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') || '', {
 
 const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET') || ''
 
+const tsToISO = (ts: number | null | undefined): string | null =>
+  ts ? new Date(ts * 1000).toISOString() : null
+
 serve(async (req) => {
   const signature = req.headers.get('stripe-signature')
 
@@ -98,11 +101,21 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session, supabas
     return
   }
 
-  // Link Stripe customer to user profile
+  // Fetch the subscription to get period dates — customer.subscription.created fires
+  // before this event, so handleSubscriptionUpdate can't find the user yet by sub ID.
+  // This is the only place we have both userId and subscriptionId together.
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId)
+  const subItem = subscription.items.data[0]
+
   const { error } = await supabase.from('user_profiles')
     .update({
       stripe_customer_id: customerId,
-      stripe_subscription_id: subscriptionId
+      stripe_subscription_id: subscriptionId,
+      subscription_tier: 'pro',
+      subscription_status: subscription.status,
+      current_period_start: tsToISO(subItem?.current_period_start),
+      current_period_end: tsToISO(subItem?.current_period_end),
+      cancel_at_period_end: subscription.cancel_at_period_end,
     })
     .eq('user_id', userId)
 
@@ -126,16 +139,18 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
     return
   }
 
-  const periodChanged =
-    new Date(subscription.current_period_start * 1000).toISOString() !== profile.current_period_start
+  const subItem = subscription.items.data[0]
+  const periodStart = tsToISO(subItem?.current_period_start)
+  const periodEnd = tsToISO(subItem?.current_period_end)
+  const periodChanged = periodStart !== profile.current_period_start
 
   // Update user profile with subscription details
   const { error: updateError } = await supabase.from('user_profiles')
     .update({
       subscription_tier: 'pro',
       subscription_status: subscription.status,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+      current_period_start: periodStart,
+      current_period_end: periodEnd,
       cancel_at_period_end: subscription.cancel_at_period_end
     })
     .eq('stripe_subscription_id', subscription.id)
@@ -156,11 +171,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription, supab
       .eq('tier', 'pro')
       .single()
 
-    if (config) {
-      // Create new usage record for this period
-      const periodStart = new Date(subscription.current_period_start * 1000).toISOString()
-      const periodEnd = new Date(subscription.current_period_end * 1000).toISOString()
-
+    if (config && periodStart) {
       await supabase.from('usage_tracking').insert({
         user_id: profile.user_id,
         period_type: config.period_type,
