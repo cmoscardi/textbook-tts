@@ -261,11 +261,8 @@ export default function Billing() {
             </div>
 
             {/* Pro Tier */}
-            <div className="border-2 border-blue-500 rounded-lg p-6 relative">
-              <div className="absolute top-0 right-0 bg-blue-500 text-white px-3 py-1 rounded-bl-lg rounded-tr-lg text-sm font-semibold">
-                Popular
-              </div>
-              <div className="text-center mb-4">
+            <div className="border-2 border-blue-500 rounded-lg p-6">
+<div className="text-center mb-4">
                 <h3 className="text-xl font-bold text-gray-900">Pro</h3>
                 <p className="text-3xl font-bold text-gray-900 mt-2">$5.00</p>
                 <p className="text-sm text-gray-600">per month</p>
