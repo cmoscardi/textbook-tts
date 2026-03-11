@@ -216,6 +216,8 @@ export default function Layout() {
       {/* Desktop Header */}
       <div className="hidden md:flex bg-gray-800 text-white px-6 py-3 items-center justify-between">
         <h1 className="text-lg font-semibold">textbook-tts</h1>
+        <div className="flex items-center gap-4">
+          <UsageBadge />
         <button
           onClick={() => supabase.auth.signOut()}
           className="flex items-center gap-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
@@ -225,6 +227,7 @@ export default function Layout() {
           </svg>
           Logout
         </button>
+        </div>
       </div>
 
       {/* Backdrop overlay for mobile menu */}
