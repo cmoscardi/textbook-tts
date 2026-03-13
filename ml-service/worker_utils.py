@@ -2,7 +2,7 @@ from supabase import create_client, Client
 import os
 from collections import namedtuple
 import logging
-import torch
+
 
 FileInfo = namedtuple('FileInfo', ['signed_url', 'file_name', 'user_id'])
 

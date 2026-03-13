@@ -1,25 +1,20 @@
-FROM pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
-
-# Install cuDNN runtime libraries and git
-RUN apt-get update && \
-    apt-get install -y libcudnn9-cuda-12 git git-lfs && \
-    git lfs install && \
-    ldconfig && \
-    rm -rf /var/lib/apt/lists/*
+FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    postgresql-client \
-    libpq-dev \
-    ffmpeg \
-    netcat-openbsd \
+    git git-lfs \
+    libgl1 libglib2.0-0 \
+    postgresql-client libpq-dev \
+    ffmpeg netcat-openbsd \
+    && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /supertonic
-RUN git clone https://github.com/cmoscardi/supertonic.git .
-RUN git clone https://huggingface.co/Supertone/supertonic assets
+RUN git clone https://github.com/supertone-inc/supertonic.git . && \
+    git checkout 6fc89ea89eb29defb0ff2230b77c5a519acfe2a9
+RUN git clone https://huggingface.co/Supertone/supertonic-2 assets && \
+    cd assets && git checkout 75e6727618a02f323c720cba9478152d4bc16ca4
 WORKDIR /supertonic/py
 RUN pip install -r requirements.txt
-RUN pip install pydub
-RUN pip install watchdog supabase celery sqlalchemy psycopg2 pydantic python-multipart prometheus_client
+RUN pip install pydub watchdog supabase celery sqlalchemy psycopg2-binary pydantic python-multipart prometheus_client
+
+ENV PYTHONPATH="/supertonic/py:${PYTHONPATH}"

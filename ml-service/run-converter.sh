@@ -4,9 +4,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
 
 echo "========================================="
-echo "Starting CONVERTER worker"
-echo "GPU allocation: Controlled by NVIDIA_VISIBLE_DEVICES env var"
-echo "              (set by start.sh - all/none for dev, specific GPU for prod)"
+echo "Starting CONVERTER worker (CPU)"
 echo "Queues: convert_queue, synthesize_queue"
 echo "========================================="
 

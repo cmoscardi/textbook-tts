@@ -17,11 +17,10 @@ from worker_utils import (
     upload_audio_file,
     generate_output_file_path
 )
-from supertonic_utils import load_text_to_speech, timer, sanitize_filename, load_voice_style
+from helper import load_text_to_speech, timer, sanitize_filename, load_voice_style
 import soundfile as sf
 
 from pydub import AudioSegment
-import torch
 
 # Configure logging
 logging.basicConfig(
@@ -54,13 +53,13 @@ supabase = wu.initialize_supabase()
 
 app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postgres_url)
 
-# Celery configuration for long-running GPU tasks
+# Celery configuration for long-running TTS tasks
 app.conf.update(
     broker_heartbeat=0,  # Disable heartbeat timeout for long-running tasks
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=None,  # Unlimited reconnection attempts
     task_acks_late=True,  # Only acknowledge task after it completes
-    worker_prefetch_multiplier=1,  # Only fetch one task at a time (important for GPU)
+    worker_prefetch_multiplier=1,  # Only fetch one task at a time (important for TTS)
     task_soft_time_limit=600,  # 10 minutes soft limit
     task_time_limit=900,  # 15 minutes hard limit
 
@@ -105,21 +104,12 @@ def convert_to_audio_task(file_id):
         if not conversion_id:
             logger.warning("Could not create conversion record - continuing without database tracking")
 
-        # Check if CUDA devices are available
-        # if not torch.cuda.is_available():
-        #     logger.warning("No CUDA device available - returning dev mode message")
-        #     if conversion_id:
-        #         finalize_conversion(conversion_id, "test.mp3", "completed", supabase=supabase)
-        #     return "no cuda device -- dev mode"
-
-        logger.info("CUDA device available, proceeding with TTS conversion")
-
         update_conversion_progress(conversion_id, 10, "running", supabase=supabase)
         logger.info("Loading supertonic style")
 
-        style = load_voice_style(["/supertonic/assets/voice_styles/M2.json"], verbose=True)
+        style = load_voice_style(["/supertonic/assets/voice_styles/M3.json"], verbose=True)
         logger.info("Running TTS...")
-        wav, duration = text_to_speech(parsed_text, style, 15, 1.05)
+        wav, duration = text_to_speech(parsed_text, "en", style, 10, 1.1)
         w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
         temp_wav_file = f"/tmp/audio_{task_id}.wav"
         logger.info(f"Saving combined audio to {temp_wav_file}")
@@ -160,12 +150,7 @@ def convert_to_audio_task(file_id):
             logger.error("Failed to upload audio file")
             finalize_conversion(conversion_id, "", "failed", supabase=supabase)
 
-        # Cleanup intermediate results only (NOT the singleton model)
-        logger.info("Cleaning up intermediate audio data (keeping singleton)")
         gc.collect()
-        torch.cuda.empty_cache()
-
-        logger.info(f"GPU memory after cleanup: allocated={torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         # Clean up temporary files
         if temp_wav_file and os.path.exists(temp_wav_file):
@@ -230,8 +215,8 @@ def synthesize_sentence_task(text):
     _metric_start = time.time()
     _status = 'success'
     try:
-        style = load_voice_style(["/supertonic/assets/voice_styles/M2.json"], verbose=False)
-        wav, duration = text_to_speech(text, style, 15, 1.05)
+        style = load_voice_style(["/supertonic/assets/voice_styles/M3.json"], verbose=False)
+        wav, duration = text_to_speech(text, "en", style, 5, 1.05)
         w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
         duration_secs = float(duration[0].item())
 

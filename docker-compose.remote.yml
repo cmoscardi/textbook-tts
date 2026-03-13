@@ -1,7 +1,4 @@
-version: '3.8'
-
 # Remote host converter deployment
-# This runs on the remote GPU host (192.168.1.15)
 # Connects to RabbitMQ on main host via tun0 (10.8.0.10)
 
 services:
@@ -25,18 +22,11 @@ services:
       - .env.production
     command: ./run-converter.prod.sh
     healthcheck:
-      test: ["CMD", "python", "-c", "import torch"]
+      test: ["CMD", "python", "-c", "import onnxruntime"]
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 120s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
 # because this is a remote deployment
 networks:

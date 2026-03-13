@@ -3,7 +3,6 @@ set -e
 
 echo "========================================="
 echo "Starting CONVERTER worker (production)"
-echo "GPU: ${NVIDIA_VISIBLE_DEVICES}"
 echo "Queues: convert_queue, synthesize_queue"
 echo "RabbitMQ Host: ${RABBITMQ_HOST}"
 echo "========================================="
