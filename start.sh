@@ -3,7 +3,7 @@
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 cd $SCRIPT_DIR
-npx supabase start
+npx supabase start --ignore-health-check
 #./custom-init.sh
 cd $SCRIPT_DIR
 
