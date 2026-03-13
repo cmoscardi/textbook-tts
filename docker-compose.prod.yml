@@ -163,6 +163,10 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+    # driver 570 removed --help-query-gpus, breaking AUTO field detection.
+    # explicit list of fields verified to work on RTX 3070 Ti / driver 570.
+    command:
+      - "--query-field-names=timestamp,driver_version,count,name,uuid,pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,index,display_mode,display_active,persistence_mode,fan.speed,pstate,memory.total,memory.used,memory.free,compute_mode,utilization.gpu,utilization.memory,utilization.encoder,utilization.decoder,encoder.stats.sessionCount,encoder.stats.averageFps,encoder.stats.averageLatency,temperature.gpu,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.current.graphics,clocks.current.sm,clocks.current.memory,clocks.current.video,clocks.max.graphics,clocks.max.sm,clocks.max.memory"
     networks:
       - ml_network
 
