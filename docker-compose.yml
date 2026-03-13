@@ -103,7 +103,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=30d'
     ports:
-      - "9090:9090"
+      - "9091:9090"
     networks:
       - supabase_network_textbook-tts
 
@@ -115,7 +115,7 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     depends_on:
@@ -144,7 +144,7 @@ services:
     container_name: flower
     command: celery --broker=amqp://guest@rabbitmq// flower --port=5555
     ports:
-      - "5555:5555"
+      - "5556:5555"
     depends_on:
       - rabbitmq
     networks:
