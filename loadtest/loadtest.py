@@ -34,7 +34,7 @@ import httpx
 
 POLL_INTERVAL = 1.0  # seconds between parse-status polls
 PREFETCH_AHEAD = 3   # sentences to prefetch (mirrors frontend)
-DEFAULT_PARSE_TIMEOUT = 300  # seconds
+DEFAULT_PARSE_TIMEOUT = 1200  # seconds
 SYNTH_TIMEOUT = 60.0  # per-sentence synthesis timeout
 # Cloudflare Turnstile always-pass test secret & token
 TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA"
@@ -148,6 +148,8 @@ class UserResult:
     parse_processing_time: float = 0.0
     first_synthesis_latency: float = 0.0
     total_buffering_time: float = 0.0
+    interruptions: int = 0
+    interruption_durations: list = field(default_factory=list)
     sentences_played: int = 0
     synthesis_latencies: list = field(default_factory=list)
     error: str | None = None
@@ -339,7 +341,9 @@ class SupabaseClient:
             objects = resp.json()
             if objects:
                 paths = [f"{user_id}/{obj['name']}" for obj in objects]
-                await self.http.delete(
+                # httpx delete doesn't support json=; use request()
+                await self.http.request(
+                    "DELETE",
                     f"{self.url}/storage/v1/object/files",
                     headers=self._admin_headers(),
                     json={"prefixes": paths},
@@ -358,7 +362,8 @@ class SupabaseClient:
 # ---------------------------------------------------------------------------
 
 async def run_user(idx: int, client: SupabaseClient, pdf_path: Path,
-                   max_sentences: int, parse_timeout: int) -> UserResult:
+                   max_sentences: int, parse_timeout: int,
+                   playback_speed: float = 1.0) -> UserResult:
     ts = int(time.time())
     email = f"loadtest+{idx}_{ts}@test.invalid"
     password = f"Lt{ts}{idx:04d}!xQ"
@@ -494,74 +499,152 @@ async def run_user(idx: int, client: SupabaseClient, pdf_path: Path,
                     return
 
         # Only spawn background poller if parse isn't already done
-        parse_bg_task = None
-        if result.parse_total_time == 0:
+        parse_done = asyncio.Event()
+        if result.parse_total_time > 0:
+            parse_done.set()
+        else:
             parse_bg_task = asyncio.create_task(poll_until_complete())
 
-        # ── 5. Fetch first-page sentences & start playback ──
-        result.phase_reached = "play"
-        sentences = await client.get_sentences(token, file_id)
-        count = min(len(sentences), max_sentences)
-        if count == 0:
-            result.error = "No sentences found after first page parsed"
-            if parse_bg_task:
+            # Wrap so we can signal parse_done when the poller returns
+            async def _poll_wrapper():
                 await parse_bg_task
+                parse_done.set()
+            asyncio.create_task(_poll_wrapper())
+
+        # ── 5. Fetch first-page sentences & start playback ──
+        # As parsing continues, new sentences appear. We re-fetch
+        # periodically and grow the play queue, mirroring the frontend.
+        result.phase_reached = "play"
+        sentences: list[dict] = await client.get_sentences(token, file_id)
+        if not sentences:
+            result.error = "No sentences found after first page parsed"
+            await parse_done.wait()
             return result
-        log(f"[User {idx}] Got {len(sentences)} sentences, playing {count}")
+        log(f"[User {idx}] Got {len(sentences)} initial sentences")
+
+        # Background task: periodically fetch new sentences while parsing
+        sentences_lock = asyncio.Lock()
+
+        async def sentence_refresher():
+            """Re-fetch sentences every 3s until parse is done."""
+            while not parse_done.is_set():
+                await asyncio.sleep(3.0)
+                try:
+                    new = await client.get_sentences(token, file_id)
+                    async with sentences_lock:
+                        if len(new) > len(sentences):
+                            sentences.extend(new[len(sentences):])
+                except Exception:
+                    pass
+            # One final fetch after parse completes
+            try:
+                new = await client.get_sentences(token, file_id)
+                async with sentences_lock:
+                    if len(new) > len(sentences):
+                        sentences.extend(new[len(sentences):])
+            except Exception:
+                pass
+
+        refresh_task = asyncio.create_task(sentence_refresher())
 
         # ── 6. Simulate playback with prefetching ──
         synth_tasks: dict[int, asyncio.Task] = {}
 
         def fire_synth(si: int) -> None:
-            if si < count and si not in synth_tasks:
+            if si < len(sentences) and si < max_sentences \
+                    and si not in synth_tasks:
                 synth_tasks[si] = asyncio.create_task(
                     client.synthesize(token, sentences[si]["text"], file_id)
                 )
 
         # Initial prefetch: sentences 0..PREFETCH_AHEAD
-        for j in range(min(PREFETCH_AHEAD + 1, count)):
+        for j in range(min(PREFETCH_AHEAD + 1, len(sentences), max_sentences)):
             fire_synth(j)
 
         total_stall = 0.0
+        i = 0
 
-        for i in range(count):
+        while i < max_sentences:
+            # Check if this sentence is available yet
+            if i >= len(sentences):
+                # No more sentences yet — wait for new ones or parse to finish
+                if parse_done.is_set():
+                    break  # parsing done, no more sentences coming
+                log(f"[User {idx}] Sentence {i}: waiting for parse...")
+                t_wait_start = time.monotonic()
+                while i >= len(sentences) and not parse_done.is_set():
+                    await asyncio.sleep(0.5)
+                if i >= len(sentences):
+                    break  # parse done, still no more
+                wait = time.monotonic() - t_wait_start
+                total_stall += wait
+                result.interruptions += 1
+                result.interruption_durations.append(round(wait, 3))
+                log(f"[User {idx}] Sentence {i}: "
+                    f"new sentences available (+{wait:.1f}s wait)")
+                # Prefetch newly available sentences
+                for j in range(i, min(i + PREFETCH_AHEAD + 1,
+                                      len(sentences), max_sentences)):
+                    fire_synth(j)
+
+            # Ensure synthesis is started for this sentence
+            fire_synth(i)
+
             # Wait for current sentence's audio
             t_wait_start = time.monotonic()
             try:
                 latency, duration = await synth_tasks[i]
             except Exception as e:
-                log(f"[User {idx}] Synthesis failed for sentence {i}: {e}")
+                log(f"[User {idx}] Sentence {i}: synthesis FAILED ({e})")
                 result.synthesis_latencies.append(-1.0)
-                fire_synth(i + PREFETCH_AHEAD + 1)
+                i += 1
+                fire_synth(i + PREFETCH_AHEAD)
                 continue
 
             t_now = time.monotonic()
             wait_time = t_now - t_wait_start
 
             # Stall: how long we had to wait past when we needed the audio.
-            # If the task was already done, wait_time ≈ 0 → no stall.
             stall = wait_time if wait_time > 0.05 else 0.0
+
+            if stall > 0:
+                result.interruptions += 1
+                result.interruption_durations.append(round(stall, 3))
+                log(f"[User {idx}] Sentence {i}: "
+                    f"buffering {stall:.1f}s")
 
             if i == 0:
                 result.first_synthesis_latency = latency
             total_stall += stall
             result.synthesis_latencies.append(round(latency, 3))
 
-            # Prefetch next
-            fire_synth(i + PREFETCH_AHEAD + 1)
+            # Prefetch next sentences (may include newly parsed ones)
+            for j in range(i + 1, min(i + PREFETCH_AHEAD + 2,
+                                      len(sentences), max_sentences)):
+                fire_synth(j)
 
-            # Simulate playback — sleep for audio duration
-            await asyncio.sleep(duration)
+            play_time = duration / playback_speed
+            log(f"[User {idx}] Sentence {i}: playing "
+                f"({duration:.1f}s audio @ {playback_speed}x = {play_time:.1f}s, "
+                f"synth took {latency:.1f}s)")
 
-        result.sentences_played = count
+            # Simulate playback — sleep for audio duration / speed
+            await asyncio.sleep(play_time)
+            i += 1
+
+        result.sentences_played = i
         result.total_buffering_time = round(total_stall, 3)
 
-        # Wait for background parse polling to finish
-        if parse_bg_task:
-            await parse_bg_task
+        # Wait for background tasks to finish
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
+        await parse_done.wait()
 
         log(
-            f"[User {idx}] Done. Played {count} sentences, "
+            f"[User {idx}] Done. Played {i}/{len(sentences)} sentences, "
             f"stall: {total_stall:.1f}s, "
             f"first audio: {result.first_synthesis_latency:.2f}s"
         )
@@ -648,7 +731,8 @@ async def run_load_test(args: argparse.Namespace) -> None:
 
             log(f"Spawning {args.users} users at {args.rate}/s "
                 f"({interval:.1f}s apart), "
-                f"max {args.max_sentences} sentences each")
+                f"max {args.max_sentences} sentences each, "
+                f"{args.playback_speed}x speed")
 
             for i in range(args.users):
                 pdf = random.choice(pdfs)
@@ -656,6 +740,7 @@ async def run_load_test(args: argparse.Namespace) -> None:
                     run_user(
                         i, client, pdf,
                         args.max_sentences, args.parse_timeout,
+                        args.playback_speed,
                     )
                 )
                 tasks.append(task)
@@ -706,6 +791,9 @@ async def run_load_test(args: argparse.Namespace) -> None:
         "total_buffering_time": stats_for(
             [r.total_buffering_time for r in succeeded if r.sentences_played > 0]
         ),
+        "interruptions": stats_for(
+            [float(r.interruptions) for r in succeeded if r.sentences_played > 0]
+        ),
     }
 
     report = {
@@ -745,6 +833,7 @@ async def run_load_test(args: argparse.Namespace) -> None:
         ("1st audio latency", "first_synthesis_latency"),
         ("Synthesis latency", "synthesis_latency"),
         ("Buffering time", "total_buffering_time"),
+        ("Interruptions", "interruptions"),
     ]:
         s = summary[key]
         log(f"  {label:20s}  mean={s['mean']:6.1f}s  "
@@ -841,13 +930,15 @@ def main():
                        help="Total users to spawn (default: 5)")
     run_p.add_argument("--pdf-dir", default="./test-pdfs",
                        help="Directory containing test PDFs")
-    run_p.add_argument("--max-sentences", type=int, default=20,
+    run_p.add_argument("--max-sentences", type=int, default=100,
                        help="Max sentences to play per user (default: 20)")
     run_p.add_argument("--parse-timeout", type=int,
                        default=DEFAULT_PARSE_TIMEOUT,
                        help="Parse timeout in seconds (default: 300)")
     run_p.add_argument("--output", default="output/loadtest-results.json",
                        help="Output JSON path (default: output/loadtest-results.json)")
+    run_p.add_argument("--playback-speed", type=float, default=1.0,
+                       help="Playback speed multiplier (default: 1.0)")
 
     cleanup_p = subs.add_parser("cleanup", help="Delete loadtest users")
     cleanup_p.add_argument("--dry-run", action="store_true",
