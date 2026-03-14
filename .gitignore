@@ -41,3 +41,6 @@ __pycache__
 localstack
 supabase/.branches
 .env.production
+
+loadtest/loadtest-result.json
+supabase/.temp
