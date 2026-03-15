@@ -399,7 +399,19 @@ def parse_pdf_task(file_id):
         # Check if CUDA devices are available
         if not torch.cuda.is_available():
             logger.warning("No CUDA device available - saving stub sentences for dev mode")
-            dev_text = "Dev mode: no CUDA device available. This is placeholder text for local development."
+            dev_text = (
+                "Dev mode: no CUDA device available, so real OCR is skipped. "
+                "This document contains placeholder sentences for local development and testing. "
+                "The text-to-speech pipeline converts each sentence into an audio clip that is streamed to the browser. "
+                "Sentences are extracted from the parsed document and stored in the database with bounding-box coordinates. "
+                "Playback begins with the first sentence and advances automatically through the rest of the document. "
+                "The player pre-fetches the next three sentences in parallel so there is no noticeable gap between clips. "
+                "Synthesized audio is cached in Supabase storage after the first request to avoid redundant computation. "
+                "Users can tap any sentence in the PDF overlay to jump directly to that position in the audio stream. "
+                "Speed controls let listeners choose a playback rate between half-speed and three times normal speed. "
+                "Progress is saved automatically so readers can pick up exactly where they left off on any device. "
+                "When running with a real GPU the OCR model will replace these stubs with actual document content."
+            )
 
             # Increment usage by 1 stub page (skip if this is a redelivered task)
             if not already_charged:
