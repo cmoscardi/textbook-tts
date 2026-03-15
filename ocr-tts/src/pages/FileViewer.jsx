@@ -382,25 +382,53 @@ export default function FileViewer() {
     if (!currentSession) throw new Error('Not authenticated');
 
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const response = await fetch(`${supabaseUrl}/functions/v1/play-sentence`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentSession.access_token}`,
-        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({ text: sentences[idx].text, file_id: fileId }),
-    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${currentSession.access_token}`,
+      'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+    };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Synthesis failed: ${errorText}`);
+    // Step 1: Submit (returns cached audio directly on cache hit)
+    const submitRes = await fetch(`${supabaseUrl}/functions/v1/play-sentence`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        text: sentences[idx].text,
+        file_id: fileId,
+        sentence_id: sentences[idx].sentence_id,
+      }),
+    });
+    if (!submitRes.ok) throw new Error(`Submit failed: ${await submitRes.text()}`);
+
+    // Cache hit — audio returned directly
+    if (submitRes.headers.get('content-type')?.includes('audio/')) {
+      const blob = await submitRes.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      sentenceAudioCache.current.set(idx, blobUrl);
+      return blobUrl;
     }
 
-    const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    sentenceAudioCache.current.set(idx, blobUrl);
-    return blobUrl;
+    const { task_id } = await submitRes.json();
+
+    // Step 2: Poll for result
+    const sentenceId = sentences[idx].sentence_id;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const pollRes = await fetch(
+        `${supabaseUrl}/functions/v1/play-sentence?task_id=${task_id}&sentence_id=${sentenceId}`,
+        { headers }
+      );
+      if (!pollRes.ok) throw new Error(`Poll failed: ${await pollRes.text()}`);
+
+      if (pollRes.headers.get('content-type')?.includes('audio/')) {
+        const blob = await pollRes.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        sentenceAudioCache.current.set(idx, blobUrl);
+        return blobUrl;
+      }
+      // Still processing — wait 500ms
+      await new Promise(r => setTimeout(r, 500));
+    }
+    throw new Error('Synthesis timed out');
   }, [sentences, fileId]);
 
   const playFromIndex = useCallback(async (startIdx) => {

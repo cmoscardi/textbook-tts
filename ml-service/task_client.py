@@ -19,6 +19,7 @@ client_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
+    result_expires=300,  # 5 minutes
 )
 
 # Task name constants

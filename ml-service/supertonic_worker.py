@@ -62,6 +62,7 @@ app.conf.update(
     worker_prefetch_multiplier=1,  # Only fetch one task at a time (important for TTS)
     task_soft_time_limit=600,  # 10 minutes soft limit
     task_time_limit=900,  # 15 minutes hard limit
+    result_expires=300,  # 5 minutes
 
     # Task routing configuration
     task_routes={

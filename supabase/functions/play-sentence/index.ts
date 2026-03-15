@@ -17,13 +17,15 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    const { text, file_id } = await req.json()
+    const mlServiceHost = Deno.env.get('MLSERVICE_HOST') ?? 'http://localhost:5000'
+    const mlServiceAuthKey = Deno.env.get('MLSERVICE_AUTH_KEY')
 
-    if (!text || !file_id) {
+    if (!mlServiceAuthKey) {
+      console.error('MLSERVICE_AUTH_KEY not configured')
       return new Response(
-        JSON.stringify({ error: 'Missing text or file_id' }),
+        JSON.stringify({ error: 'ML service configuration error' }),
         {
-          status: 400,
+          status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         }
       )
@@ -41,7 +43,7 @@ serve(async (req) => {
       )
     }
 
-    // Verify the user is authenticated and get their user_id
+    // Verify the user is authenticated
     const { data: { user }, error: userError } = await supabase.auth.getUser(
       authHeader.replace('Bearer ', '')
     )
@@ -51,6 +53,99 @@ serve(async (req) => {
         JSON.stringify({ error: 'Invalid or expired token' }),
         {
           status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
+    // GET — poll for synthesis result
+    if (req.method === 'GET') {
+      const url = new URL(req.url)
+      const taskId = url.searchParams.get('task_id')
+      const sentenceId = url.searchParams.get('sentence_id')
+
+      if (!taskId) {
+        return new Response(
+          JSON.stringify({ error: 'Missing task_id query parameter' }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        )
+      }
+
+      const mlResponse = await fetch(`${mlServiceHost}/synthesize/${taskId}`, {
+        method: 'GET',
+        headers: {
+          'ML-Auth-Key': mlServiceAuthKey,
+        },
+      })
+
+      if (!mlResponse.ok) {
+        const errorText = await mlResponse.text()
+        console.error('ML service error:', errorText)
+        return new Response(
+          JSON.stringify({ error: 'Failed to get synthesis status' }),
+          {
+            status: mlResponse.status,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        )
+      }
+
+      const contentType = mlResponse.headers.get('Content-Type') || ''
+
+      if (contentType.includes('audio/')) {
+        const audioBytes = await mlResponse.arrayBuffer()
+        const audioDuration = mlResponse.headers.get('X-Audio-Duration') || '0'
+
+        // Cache to Supabase storage
+        if (sentenceId) {
+          const storagePath = `${user.id}/sentences/${sentenceId}.mp3`
+          const { error: uploadError } = await supabase.storage
+            .from('files')
+            .upload(storagePath, audioBytes, {
+              contentType: 'audio/mpeg',
+              upsert: true,
+            })
+
+          if (!uploadError) {
+            await supabase
+              .from('page_sentences')
+              .update({ audio_path: storagePath })
+              .eq('sentence_id', sentenceId)
+          } else {
+            console.error('Failed to cache audio:', uploadError)
+          }
+        }
+
+        return new Response(audioBytes, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'audio/mpeg',
+            'X-Audio-Duration': audioDuration,
+          }
+        })
+      } else {
+        // Still processing — proxy JSON status
+        const body = await mlResponse.text()
+        return new Response(body, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+          }
+        })
+      }
+    }
+
+    // POST — submit synthesis request (or serve from cache)
+    const { text, file_id, sentence_id } = await req.json()
+
+    if (!text || !file_id) {
+      return new Response(
+        JSON.stringify({ error: 'Missing text or file_id' }),
+        {
+          status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         }
       )
@@ -85,21 +180,34 @@ serve(async (req) => {
       )
     }
 
-    // Call the ML service to synthesize the sentence
-    const mlServiceHost = Deno.env.get('MLSERVICE_HOST') ?? 'http://localhost:5000'
-    const mlServiceAuthKey = Deno.env.get('MLSERVICE_AUTH_KEY')
+    // Check cache: if sentence already has audio in storage, serve it directly
+    if (sentence_id) {
+      const { data: sentenceData } = await supabase
+        .from('page_sentences')
+        .select('audio_path')
+        .eq('sentence_id', sentence_id)
+        .single()
 
-    if (!mlServiceAuthKey) {
-      console.error('MLSERVICE_AUTH_KEY not configured')
-      return new Response(
-        JSON.stringify({ error: 'ML service configuration error' }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      if (sentenceData?.audio_path) {
+        const { data: audioData, error: downloadError } = await supabase.storage
+          .from('files')
+          .download(sentenceData.audio_path)
+
+        if (!downloadError && audioData) {
+          const arrayBuffer = await audioData.arrayBuffer()
+          return new Response(arrayBuffer, {
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'audio/mpeg',
+            }
+          })
         }
-      )
+        // If download failed, fall through to re-synthesize
+        console.error('Cache download failed, re-synthesizing:', downloadError)
+      }
     }
 
+    // Cache miss — submit synthesis task to ML service
     const mlResponse = await fetch(`${mlServiceHost}/synthesize`, {
       method: 'POST',
       headers: {
@@ -113,7 +221,7 @@ serve(async (req) => {
       const errorText = await mlResponse.text()
       console.error('ML service error:', errorText)
       return new Response(
-        JSON.stringify({ error: 'Failed to synthesize sentence' }),
+        JSON.stringify({ error: 'Failed to submit synthesis task' }),
         {
           status: mlResponse.status,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -121,17 +229,13 @@ serve(async (req) => {
       )
     }
 
-    // Proxy the binary audio response back to the frontend
-    const audioBytes = await mlResponse.arrayBuffer()
-    const audioDuration = mlResponse.headers.get('X-Audio-Duration') || '0'
-
-    return new Response(audioBytes, {
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'audio/mpeg',
-        'X-Audio-Duration': audioDuration,
+    const result = await mlResponse.json()
+    return new Response(
+      JSON.stringify(result),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       }
-    })
+    )
 
   } catch (error) {
     console.error('Edge function error:', error)

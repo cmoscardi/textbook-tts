@@ -9,7 +9,7 @@ import time
 import os
 from typing import Annotated
 
-from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task
+from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task, client_app
 from email_alerts import setup_email_logging, send_alert
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -194,25 +194,28 @@ def convert(request: ConvertRequest, auth: RequireAuth):
 @app.post("/synthesize")
 def synthesize(request: SynthesizeRequest, auth: RequireAuth):
     logger.info(f"Received synthesize request ({len(request.text)} chars)")
+    fut = send_synthesize_task(request.text)
+    logger.info(f"Created synthesize task with ID: {fut.id}")
+    return {"task_id": fut.id}
 
-    try:
-        fut = send_synthesize_task(request.text)
-        result = fut.get(timeout=30)
-    except Exception as e:
-        if "TimeoutError" in type(e).__name__ or "TimeLimitExceeded" in type(e).__name__:
-            logger.error(f"Synthesize task timed out: {e}")
-            raise HTTPException(status_code=504, detail="Synthesis timed out")
-        logger.error(f"Synthesize task failed: {e}")
+
+@app.get("/synthesize/{task_id}")
+def get_synthesis(task_id: str, auth: RequireAuth):
+    from celery.result import AsyncResult
+    result = AsyncResult(task_id, app=client_app)
+
+    if result.state in ('PENDING', 'STARTED', 'RETRY'):
+        return {"status": "processing"}
+    elif result.state == 'SUCCESS':
+        audio_bytes = base64.b64decode(result.result["audio_b64"])
+        duration = result.result.get("duration", 0)
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={"X-Audio-Duration": str(duration)},
+        )
+    else:  # FAILURE or REVOKED
         raise HTTPException(status_code=500, detail="Synthesis failed")
-
-    audio_bytes = base64.b64decode(result["audio_b64"])
-    duration = result.get("duration", 0)
-
-    return Response(
-        content=audio_bytes,
-        media_type="audio/mpeg",
-        headers={"X-Audio-Duration": str(duration)},
-    )
 
 
 @app.post("/ingest-email")
