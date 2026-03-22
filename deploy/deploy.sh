@@ -25,6 +25,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# TTS Engine configuration (kitten or supertonic)
+export TTS_ENGINE="${TTS_ENGINE:-kitten}"
+export TTS_DOCKERFILE="${TTS_DOCKERFILE:-Dockerfile.kitten}"
+
 # Multi-host configuration
 REMOTE_USER="christian"
 REMOTE_HOST="loc"

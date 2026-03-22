@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y \
+    git \
+    libgl1 libglib2.0-0 \
+    postgresql-client libpq-dev \
+    ffmpeg netcat-openbsd \
+    espeak-ng \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install KittenTTS from GitHub release (not PyPI)
+RUN pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl
+
+# Install shared worker dependencies (matches Dockerfile.supertonic pattern)
+RUN pip install pydub watchdog supabase celery sqlalchemy psycopg2-binary pydantic python-multipart prometheus_client soundfile numpy

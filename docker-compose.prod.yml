@@ -18,6 +18,7 @@ services:
       - .env.production
     environment:
       - NVIDIA_VISIBLE_DEVICES=none
+      - TTS_ENGINE=${TTS_ENGINE:-kitten}
     command: ./run-api.prod.sh
     networks:
       - ml_network

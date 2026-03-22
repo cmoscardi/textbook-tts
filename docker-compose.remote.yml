@@ -5,10 +5,11 @@ services:
   converter:
     build:
       context: ./ml-service
-      dockerfile: Dockerfile.supertonic
+      dockerfile: ${TTS_DOCKERFILE:-Dockerfile.kitten}
     container_name: converter-prod
     environment:
       - WORKER_TYPE=converter
+      - TTS_ENGINE=${TTS_ENGINE:-kitten}
       - RABBITMQ_HOST=__MAIN_HOST_TUN0__  # Template: Will be replaced during deployment
     networks:
       - ml_network
@@ -22,7 +23,7 @@ services:
       - .env.production
     command: ./run-converter.prod.sh
     healthcheck:
-      test: ["CMD", "python", "-c", "import onnxruntime"]
+      test: ["CMD", "python", "-c", "import celery"]
       interval: 60s
       timeout: 10s
       retries: 3

@@ -1,8 +1,15 @@
 #!/bin/bash
 set -e
 
+TTS_ENGINE="${TTS_ENGINE:-kitten}"
+if [ "$TTS_ENGINE" = "kitten" ]; then
+    WORKER_MODULE="kitten_worker"
+else
+    WORKER_MODULE="supertonic_worker"
+fi
+
 echo "========================================="
-echo "Starting CONVERTER worker (production)"
+echo "Starting CONVERTER worker (production) - Engine: $TTS_ENGINE"
 echo "Queues: convert_queue, synthesize_queue"
 echo "RabbitMQ Host: ${RABBITMQ_HOST}"
 echo "========================================="
@@ -15,7 +22,7 @@ done
 echo "RabbitMQ is available"
 
 # Start Celery worker
-exec celery -A supertonic_worker worker \
+exec celery -A $WORKER_MODULE worker \
     -c 1 \
     --pool=solo \
     --queues=convert_queue,synthesize_queue \

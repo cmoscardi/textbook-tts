@@ -24,9 +24,13 @@ client_app.conf.update(
 
 # Task name constants
 PARSE_PDF_TASK = 'ml_worker.parse_pdf_task'
-CONVERT_TO_AUDIO_TASK = 'supertonic_worker.convert_to_audio_task'
-SYNTHESIZE_SENTENCE_TASK = 'supertonic_worker.synthesize_sentence_task'
 INGEST_EMAIL_TASK = 'ml_worker.ingest_email_task'
+
+# TTS engine selection: task names are derived from the worker module name
+TTS_ENGINE = os.environ.get('TTS_ENGINE', 'kitten')
+_tts_module = 'kitten_worker' if TTS_ENGINE == 'kitten' else 'supertonic_worker'
+CONVERT_TO_AUDIO_TASK = f'{_tts_module}.convert_to_audio_task'
+SYNTHESIZE_SENTENCE_TASK = f'{_tts_module}.synthesize_sentence_task'
 
 def send_parse_task(file_id: str):
     """Send PDF parsing task to parser worker
