@@ -26,7 +26,7 @@ echo "RabbitMQ is available"
 # separate solo-pool processes instead of using prefork.
 NUM_WORKERS="${CONVERTER_WORKERS:-1}"
 if [ "$TTS_ENGINE" = "kitten" ]; then
-    NUM_WORKERS="${CONVERTER_WORKERS:-20}"
+    NUM_WORKERS="${CONVERTER_WORKERS:-10}"
 fi
 
 if [ "$NUM_WORKERS" -eq 1 ]; then
@@ -36,7 +36,7 @@ if [ "$NUM_WORKERS" -eq 1 ]; then
         --queues=convert_queue,synthesize_queue \
         --hostname=converter@%h \
         --loglevel=info \
-        --max-tasks-per-child=50
+        --max-tasks-per-child=1
 else
     echo "Launching $NUM_WORKERS worker processes..."
     PIDS=""
@@ -47,7 +47,7 @@ else
             --queues=convert_queue,synthesize_queue \
             --hostname="converter-${i}@%h" \
             --loglevel=info \
-            --max-tasks-per-child=50 &
+            --max-tasks-per-child=1 &
         PIDS="$PIDS $!"
     done
 
