@@ -9,7 +9,7 @@ import time
 import os
 from typing import Annotated
 
-from task_client import send_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task, client_app
+from task_client import send_parse_task, send_datalab_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task, client_app
 from email_alerts import setup_email_logging, send_alert
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -86,6 +86,24 @@ Instrumentator().instrument(app).expose(app)
 logger.info("FastAPI application initialized with CORS enabled")
 
 
+def is_parser_busy() -> bool:
+    """Check if the GPU parser worker has active or reserved tasks."""
+    try:
+        inspector = client_app.control.inspect(timeout=2.0)
+        active = inspector.active() or {}
+        reserved = inspector.reserved() or {}
+        for worker, tasks in active.items():
+            if any(t.get('delivery_info', {}).get('routing_key') == 'parse_queue' for t in tasks):
+                return True
+        for worker, tasks in reserved.items():
+            if any(t.get('delivery_info', {}).get('routing_key') == 'parse_queue' for t in tasks):
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Could not inspect parser queue (defaulting to GPU path): {e}")
+        return False
+
+
 @app.get("/")
 @app.get("/health")
 def health_check():
@@ -144,23 +162,25 @@ def parse(request: ParseRequest, auth: RequireAuth):
     Parse PDF endpoint that extracts text from a PDF and saves to database.
     This is step 1 of the split workflow (parse → convert).
 
+    Falls back to Datalab API when the GPU parser is busy.
+
     Requires authentication via ML-Auth-Key header.
-
-    Args:
-        request (ParseRequest): Request body containing file_id (UUID)
-        auth (RequireAuth): Authentication dependency (automatically validated)
-
-    Returns:
-        dict: Task ID for the parsing job
     """
-    logger.info(f"Received parse request for file_id: {request.file_id}")
+    file_id = str(request.file_id)
+    logger.info(f"Received parse request for file_id: {file_id}")
 
     try:
-        fut = send_parse_task(str(request.file_id))
-        logger.info(f"Created parsing task with ID: {fut.id} for file_id: {request.file_id}")
-        return {"id": fut.id, "task_type": "parse"}
+        if is_parser_busy():
+            logger.info(f"GPU parser busy, routing to Datalab API for file_id: {file_id}")
+            fut = send_datalab_parse_task(file_id)
+            logger.info(f"Created Datalab parse task with ID: {fut.id} for file_id: {file_id}")
+            return {"id": fut.id, "task_type": "parse"}
+        else:
+            fut = send_parse_task(file_id)
+            logger.info(f"Created GPU parse task with ID: {fut.id} for file_id: {file_id}")
+            return {"id": fut.id, "task_type": "parse"}
     except Exception as e:
-        logger.error(f"Error creating parse task for file_id {request.file_id}: {str(e)}")
+        logger.error(f"Error creating parse task for file_id {file_id}: {str(e)}")
         raise
 
 

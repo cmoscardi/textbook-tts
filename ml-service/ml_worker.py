@@ -18,6 +18,8 @@ from worker_utils import (
     create_parsing_record,
     update_parsing_progress,
     finalize_parsing,
+    clean_markdown_for_tts,
+    split_and_merge_sentences,
 )
 
 
@@ -150,84 +152,6 @@ if worker_type == "parser":
         logger.warning("CUDA not available - parser models will be loaded on-demand (dev mode)")
 else:
     logger.info(f"Worker type: {worker_type or 'NONE'} - No models loaded (API mode)")
-
-def clean_markdown_for_tts(text: str) -> str:
-    """Clean markdown text to make it suitable for text-to-speech
-
-    Removes markdown formatting while preserving the natural reading flow.
-    Keeps numbered lists as they read well in TTS.
-
-    Args:
-        text: Raw markdown text
-
-    Returns:
-        Cleaned text suitable for TTS
-    """
-    if not text:
-        return ""
-
-    # Remove code blocks (must be done before inline code)
-    text = re.sub(r'```[\s\S]*?```', '', text)
-
-    # Remove inline code backticks
-    text = re.sub(r'`([^`]+)`', r'\1', text)
-
-    # Convert links [text](url) to just the text
-    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-
-    # Remove images ![alt](url)
-    text = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', '', text)
-
-    # Remove reference-style links [text][ref]
-    text = re.sub(r'\[([^\]]+)\]\[[^\]]*\]', r'\1', text)
-
-    # Remove link references [ref]: url
-    text = re.sub(r'^\[[^\]]+\]:\s*.*$', '', text, flags=re.MULTILINE)
-
-    # Remove header markers (# ## ###) but keep the text
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-
-    # Remove bold/italic markers
-    text = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', text)  # Bold+italic
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)      # Bold
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)          # Italic
-    text = re.sub(r'___([^_]+)___', r'\1', text)        # Bold+italic
-    text = re.sub(r'__([^_]+)__', r'\1', text)          # Bold
-    text = re.sub(r'_([^_]+)_', r'\1', text)            # Italic
-
-    # Remove strikethrough
-    text = re.sub(r'~~([^~]+)~~', r'\1', text)
-
-    # Remove bullet list markers (-, *, +) but KEEP numbered lists
-    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
-
-    # Remove horizontal rules
-    text = re.sub(r'^[\s]*[-*_]{3,}[\s]*$', '', text, flags=re.MULTILINE)
-
-    # Remove HTML tags (if any)
-    text = re.sub(r'<[^>]+>', '', text)
-
-    # Remove blockquote markers
-    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
-
-    # Remove table formatting (basic approach)
-    # Remove table separator lines like |---|---|
-    text = re.sub(r'^\|?[\s]*:?-+:?[\s]*\|[\s]*:?-+:?[\s]*.*$', '', text, flags=re.MULTILINE)
-    # Remove table cell markers but keep content
-    text = re.sub(r'\|', ' ', text)
-
-    # Normalize whitespace
-    # Replace multiple spaces with single space
-    text = re.sub(r' +', ' ', text)
-    # Replace multiple newlines with double newline (paragraph breaks)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    # Remove trailing/leading whitespace from lines
-    text = '\n'.join(line.strip() for line in text.split('\n'))
-    # Remove leading/trailing whitespace from entire text
-    text = text.strip()
-
-    return text
-
 
 # Block types that contain readable text for sentence extraction
 _TEXT_BLOCK_TYPES = (
@@ -399,6 +323,8 @@ def parse_pdf_task(file_id):
         # Check if CUDA devices are available
         if not torch.cuda.is_available():
             logger.warning("No CUDA device available - saving stub sentences for dev mode")
+            # simulate parsing
+            import time; time.sleep(15)
             dev_text = (
                 "Dev mode: no CUDA device available, so real OCR is skipped. "
                 "This document contains placeholder sentences for local development and testing. "
@@ -693,22 +619,7 @@ def save_text_as_parsed(file_id, user_id, text, raw_html=None):
     task_id = f"email-ingest-{file_id}"
     parsing_id = create_parsing_record(file_id, task_id, supabase)
 
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-
-    # Merge short sentences (<150 chars) with the next one
-    merged = []
-    for s in sentences:
-        s = s.strip()
-        if not s:
-            continue
-        if merged and len(merged[-1]) < 150:
-            merged[-1] += ' ' + s
-        else:
-            merged.append(s)
-    if len(merged) >= 2 and len(merged[-1]) < 150:
-        merged[-2] += ' ' + merged[-1]
-        merged.pop()
+    merged = split_and_merge_sentences(text)
 
     # Create single page record (width/height 0 — no PDF dimensions)
     page_id = wu.create_file_page(

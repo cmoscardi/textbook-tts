@@ -72,6 +72,30 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  datalab-parser:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.datalab
+    container_name: datalab-parser-prod
+    restart: unless-stopped
+    environment:
+      - WORKER_TYPE=datalab-parser
+    working_dir: /app
+    env_file:
+      - .env.production
+    command: ./run-datalab-parser.prod.sh
+    networks:
+      - ml_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import celery"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared-prod

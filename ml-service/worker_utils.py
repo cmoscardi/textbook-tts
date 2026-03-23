@@ -1,5 +1,6 @@
 from supabase import create_client, Client
 import os
+import re
 from collections import namedtuple
 import logging
 
@@ -348,3 +349,77 @@ def generate_output_file_path(user_id: str, original_filename: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid.uuid4())[:8]
     return f"{user_id}/{base_name}_{timestamp}_{unique_id}.mp3"
+
+
+def clean_markdown_for_tts(text: str) -> str:
+    """Clean markdown text to make it suitable for text-to-speech.
+
+    Removes markdown formatting while preserving the natural reading flow.
+    Keeps numbered lists as they read well in TTS.
+    """
+    if not text:
+        return ""
+
+    # Remove code blocks (must be done before inline code)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove inline code backticks
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Convert links [text](url) to just the text
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    # Remove images ![alt](url)
+    text = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', '', text)
+    # Remove reference-style links [text][ref]
+    text = re.sub(r'\[([^\]]+)\]\[[^\]]*\]', r'\1', text)
+    # Remove link references [ref]: url
+    text = re.sub(r'^\[[^\]]+\]:\s*.*$', '', text, flags=re.MULTILINE)
+    # Remove header markers (# ## ###) but keep the text
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Remove bold/italic markers
+    text = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', text)  # Bold+italic
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)      # Bold
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)          # Italic
+    text = re.sub(r'___([^_]+)___', r'\1', text)        # Bold+italic
+    text = re.sub(r'__([^_]+)__', r'\1', text)          # Bold
+    text = re.sub(r'_([^_]+)_', r'\1', text)            # Italic
+    # Remove strikethrough
+    text = re.sub(r'~~([^~]+)~~', r'\1', text)
+    # Remove bullet list markers (-, *, +) but KEEP numbered lists
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    # Remove horizontal rules
+    text = re.sub(r'^[\s]*[-*_]{3,}[\s]*$', '', text, flags=re.MULTILINE)
+    # Remove HTML tags (if any)
+    text = re.sub(r'<[^>]+>', '', text)
+    # Remove blockquote markers
+    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
+    # Remove table formatting
+    text = re.sub(r'^\|?[\s]*:?-+:?[\s]*\|[\s]*:?-+:?[\s]*.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\|', ' ', text)
+    # Normalize whitespace
+    text = re.sub(r' +', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = '\n'.join(line.strip() for line in text.split('\n'))
+    text = text.strip()
+
+    return text
+
+
+def split_and_merge_sentences(text: str, min_length: int = 150) -> list[str]:
+    """Split text into sentences and merge short ones.
+
+    Splits on sentence-ending punctuation, then merges consecutive short
+    sentences (< min_length chars) to produce chunks suitable for TTS.
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    merged = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if merged and len(merged[-1]) < min_length:
+            merged[-1] += ' ' + s
+        else:
+            merged.append(s)
+    if len(merged) >= 2 and len(merged[-1]) < min_length:
+        merged[-2] += ' ' + merged[-1]
+        merged.pop()
+    return merged

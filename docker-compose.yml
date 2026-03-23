@@ -83,6 +83,25 @@ services:
     depends_on:
       - rabbitmq
 
+  datalab-parser:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.datalab
+    container_name: datalab-parser
+    environment:
+      - WORKER_TYPE=datalab-parser
+    volumes:
+      - ./ml-service:/app
+      - ./hf-cache:/root/.cache/huggingface
+    working_dir: /app
+    command: ./run-datalab-parser.sh
+    env_file:
+      - .env.development
+    networks:
+      - supabase_network_textbook-tts
+    depends_on:
+      - rabbitmq
+
   rabbitmq:
     container_name: rabbitmq
     image: rabbitmq:3-management
