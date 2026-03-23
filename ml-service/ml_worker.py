@@ -324,7 +324,7 @@ def parse_pdf_task(file_id):
         if not torch.cuda.is_available():
             logger.warning("No CUDA device available - saving stub sentences for dev mode")
             # simulate parsing
-            import time; time.sleep(15)
+            time.sleep(15)
             dev_text = (
                 "Dev mode: no CUDA device available, so real OCR is skipped. "
                 "This document contains placeholder sentences for local development and testing. "
