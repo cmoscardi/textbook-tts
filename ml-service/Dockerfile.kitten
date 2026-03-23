@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install KittenTTS from GitHub release (not PyPI)
-RUN pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl
+# Install KittenTTS from fork
+RUN pip install git+https://github.com/cmoscardi/KittenTTS.git
 
 # Install shared worker dependencies (matches Dockerfile.supertonic pattern)
 RUN pip install pydub watchdog supabase celery sqlalchemy psycopg2-binary pydantic python-multipart prometheus_client soundfile numpy
