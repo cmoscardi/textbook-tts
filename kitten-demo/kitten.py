@@ -1,5 +1,5 @@
 from kittentts import KittenTTS
-m = KittenTTS("KittenML/kitten-tts-mini-0.8")
+m = KittenTTS("KittenML/kitten-tts-micro-0.8")
 import time
 import numpy as np
 
