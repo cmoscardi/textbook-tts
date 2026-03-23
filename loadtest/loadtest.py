@@ -36,6 +36,9 @@ POLL_INTERVAL = 1.0  # seconds between parse-status polls
 PREFETCH_AHEAD = 3   # sentences to prefetch (mirrors frontend)
 DEFAULT_PARSE_TIMEOUT = 1200  # seconds
 SYNTH_TIMEOUT = 60.0  # per-sentence synthesis timeout
+RETRY_STATUSES = {401, 502}  # transient errors to retry
+MAX_RETRIES = 2
+RETRY_BACKOFF = 1.0  # seconds between retries
 # Cloudflare Turnstile always-pass test secret & token
 TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA"
 TURNSTILE_TEST_TOKEN = "10000000-aaaa-bbbb-cccc-000000000001"
@@ -169,6 +172,17 @@ class SupabaseClient:
         self.http = http
         self.captcha_token = captcha_token
 
+    async def _retry_request(self, method: str, url: str, **kwargs):
+        """Retry HTTP requests on transient 401/502 errors."""
+        for attempt in range(MAX_RETRIES + 1):
+            resp = await getattr(self.http, method)(url, **kwargs)
+            if resp.status_code not in RETRY_STATUSES or attempt == MAX_RETRIES:
+                return resp
+            log(f"  [retry] {method.upper()} {url.split('/')[-1]} "
+                f"got {resp.status_code}, retrying ({attempt + 1}/{MAX_RETRIES})...")
+            await asyncio.sleep(RETRY_BACKOFF)
+        return resp  # unreachable, but satisfies type checkers
+
     def _admin_headers(self):
         return {
             "Authorization": f"Bearer {self.service_key}",
@@ -266,7 +280,8 @@ class SupabaseClient:
     # ---- Parse ----
 
     async def start_parse(self, token: str, file_id: str) -> str:
-        resp = await self.http.post(
+        resp = await self._retry_request(
+            "post",
             f"{self.url}/functions/v1/parse-file",
             headers=self._user_headers(token),
             json={"file_id": file_id},
@@ -275,7 +290,8 @@ class SupabaseClient:
         return resp.json()["id"]
 
     async def poll_parse_status(self, token: str, job_id: str) -> dict | None:
-        resp = await self.http.get(
+        resp = await self._retry_request(
+            "get",
             f"{self.url}/rest/v1/file_parsings",
             headers=self._user_headers(token),
             params={"job_id": f"eq.{job_id}", "select": "*"},
@@ -287,7 +303,8 @@ class SupabaseClient:
     # ---- Sentences ----
 
     async def get_sentences(self, token: str, file_id: str) -> list[dict]:
-        resp = await self.http.get(
+        resp = await self._retry_request(
+            "get",
             f"{self.url}/rest/v1/page_sentences",
             headers=self._user_headers(token),
             params={
@@ -310,7 +327,8 @@ class SupabaseClient:
         t0 = time.monotonic()
 
         # Step 1: Submit synthesis task
-        resp = await self.http.post(
+        resp = await self._retry_request(
+            "post",
             f"{self.url}/functions/v1/play-sentence",
             headers=self._user_headers(token),
             json={"text": text, "file_id": file_id},
@@ -345,7 +363,8 @@ class SupabaseClient:
 
             await asyncio.sleep(0.5)
 
-            resp = await self.http.get(
+            resp = await self._retry_request(
+                "get",
                 poll_url,
                 headers=self._user_headers(token),
                 timeout=SYNTH_TIMEOUT,

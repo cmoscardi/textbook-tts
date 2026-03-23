@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { verifyJwt } from '../_shared/auth.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,12 +42,10 @@ serve(async (req) => {
       )
     }
 
-    // Verify the user is authenticated and get their user_id
-    const { data: { user }, error: userError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    )
+    // Verify the user is authenticated (local JWT verification — no GoTrue network call)
+    const user = await verifyJwt(authHeader.replace('Bearer ', ''))
 
-    if (userError || !user) {
+    if (!user) {
       return new Response(
         JSON.stringify({ error: 'Invalid or expired token' }),
         {
