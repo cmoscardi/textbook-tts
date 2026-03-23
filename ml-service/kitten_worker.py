@@ -73,7 +73,7 @@ app.conf.update(
 register_celery_failure_handler(app)
 
 # KittenTTS configuration
-KITTEN_MODEL = "KittenML/kitten-tts-mini-0.8"
+KITTEN_MODEL = "KittenML/kitten-tts-micro-0.8"
 KITTEN_VOICE = os.environ.get("KITTEN_VOICE", "Bruno")
 KITTEN_SAMPLE_RATE = 24000
 
