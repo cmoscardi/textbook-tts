@@ -183,7 +183,8 @@ npx supabase secrets set \
     SUPABASE_URL="$SUPABASE_URL" \
     SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
     MLSERVICE_HOST="$MLSERVICE_HOST" \
-    MLSERVICE_AUTH_KEY="$MLSERVICE_AUTH_KEY" || {
+    MLSERVICE_AUTH_KEY="$MLSERVICE_AUTH_KEY" \
+    MY_JWT_SECRET="$MY_JWT_SECRET" || {
     echo -e "${RED}Error: Failed to set function secrets!${NC}"
     exit 1
 }
