@@ -303,21 +303,66 @@ class SupabaseClient:
 
     async def synthesize(self, token: str, text: str,
                          file_id: str) -> tuple[float, float]:
-        """Returns (http_latency_seconds, audio_duration_seconds)."""
+        """Submit synthesis task then poll until audio is ready.
+
+        Returns (total_latency_seconds, audio_duration_seconds).
+        """
         t0 = time.monotonic()
+
+        # Step 1: Submit synthesis task
         resp = await self.http.post(
             f"{self.url}/functions/v1/play-sentence",
             headers=self._user_headers(token),
             json={"text": text, "file_id": file_id},
             timeout=SYNTH_TIMEOUT,
         )
-        latency = time.monotonic() - t0
         resp.raise_for_status()
-        duration = float(resp.headers.get("X-Audio-Duration", "0") or "0")
-        if duration <= 0:
-            # Fallback: estimate from MP3 size at 128kbps
-            duration = max(len(resp.content) / 16000, 0.5)
-        return latency, duration
+
+        # If we got audio back directly (cache hit), return immediately
+        content_type = resp.headers.get("content-type", "")
+        if "audio/" in content_type:
+            latency = time.monotonic() - t0
+            duration = float(resp.headers.get("X-Audio-Duration", "0") or "0")
+            if duration <= 0:
+                duration = max(len(resp.content) / 16000, 0.5)
+            return latency, duration
+
+        # Otherwise we got a task_id back — poll for result
+        body = resp.json()
+        task_id = body.get("task_id")
+        if not task_id:
+            raise RuntimeError(f"No task_id in synthesis response: {body}")
+
+        # Step 2: Poll until audio is ready
+        poll_url = (f"{self.url}/functions/v1/play-sentence"
+                    f"?task_id={task_id}")
+        while True:
+            elapsed = time.monotonic() - t0
+            if elapsed > SYNTH_TIMEOUT:
+                raise TimeoutError(
+                    f"Synthesis not ready after {SYNTH_TIMEOUT}s"
+                )
+
+            await asyncio.sleep(0.5)
+
+            resp = await self.http.get(
+                poll_url,
+                headers=self._user_headers(token),
+                timeout=SYNTH_TIMEOUT,
+            )
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "")
+            if "audio/" in content_type:
+                latency = time.monotonic() - t0
+                duration = float(
+                    resp.headers.get("X-Audio-Duration", "0") or "0"
+                )
+                if duration <= 0:
+                    duration = max(len(resp.content) / 16000, 0.5)
+                return latency, duration
+
+            # Still processing — keep polling
 
     # ---- Cleanup ----
 
