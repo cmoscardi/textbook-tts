@@ -908,7 +908,7 @@ export default function FileViewer() {
 
             {/* Speed control */}
             <div className="flex items-center gap-2 mt-3">
-              {[0.5, 1, 1.5, 2, 2.5, 3].map((rate) => (
+              {[1, 1.25, 1.5, 1.75, 2].map((rate) => (
                 <button
                   key={rate}
                   onClick={() => setPlaybackRate(rate)}
