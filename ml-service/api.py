@@ -87,21 +87,35 @@ logger.info("FastAPI application initialized with CORS enabled")
 
 
 def is_parser_busy() -> bool:
-    """Check if the GPU parser worker has active or reserved tasks."""
+    """Check if the GPU parser is busy (active task) or has queued messages."""
     try:
+        # Check if the worker has an active or reserved parse task
         inspector = client_app.control.inspect(timeout=2.0)
         active = inspector.active() or {}
         reserved = inspector.reserved() or {}
         for worker, tasks in active.items():
             if any(t.get('delivery_info', {}).get('routing_key') == 'parse_queue' for t in tasks):
+                logger.info("GPU parser busy: active task found")
                 return True
         for worker, tasks in reserved.items():
             if any(t.get('delivery_info', {}).get('routing_key') == 'parse_queue' for t in tasks):
+                logger.info("GPU parser busy: reserved task found")
                 return True
+
+        # Check if there are messages waiting in the parse_queue
+        with client_app.connection_or_acquire() as conn:
+            channel = conn.default_channel
+            _, message_count, _ = channel.queue_declare(
+                queue='parse_queue', passive=True
+            )
+            if message_count > 0:
+                logger.info(f"GPU parser busy: {message_count} message(s) queued")
+                return True
+
         return False
     except Exception as e:
-        logger.warning(f"Could not inspect parser queue (defaulting to GPU path): {e}")
-        return False
+        logger.warning(f"Could not inspect parser status, assuming busy: {e}")
+        return True
 
 
 @app.get("/")
