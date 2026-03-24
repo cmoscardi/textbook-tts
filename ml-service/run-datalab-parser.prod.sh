@@ -22,4 +22,4 @@ exec celery -A datalab_worker worker \
     --queues=datalab_parse_queue \
     --hostname=datalab-parser@%h \
     --loglevel=info \
-    --max-tasks-per-child=50
+    --max-tasks-per-child=1
