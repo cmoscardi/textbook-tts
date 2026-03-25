@@ -334,7 +334,10 @@ class SupabaseClient:
             json={"text": text, "file_id": file_id},
             timeout=SYNTH_TIMEOUT,
         )
-        resp.raise_for_status()
+        if not resp.is_success:
+            raise RuntimeError(
+                f"Synthesis POST failed {resp.status_code}: {resp.text[:500]}"
+            )
 
         # If we got audio back directly (cache hit), return immediately
         content_type = resp.headers.get("content-type", "")
@@ -369,7 +372,10 @@ class SupabaseClient:
                 headers=self._user_headers(token),
                 timeout=SYNTH_TIMEOUT,
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                raise RuntimeError(
+                    f"Synthesis poll failed {resp.status_code}: {resp.text[:500]}"
+                )
 
             content_type = resp.headers.get("content-type", "")
             if "audio/" in content_type:
