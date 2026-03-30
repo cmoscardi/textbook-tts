@@ -169,6 +169,21 @@ sudo certbot renew --dry-run
 
 See `.env.production.example` for all available configuration options.
 
+### TTS Engine
+
+The converter worker supports two TTS engines, controlled by env vars in `.env.production`:
+
+| Variable | Values | Default |
+|---|---|---|
+| `TTS_ENGINE` | `supertonic` \| `kitten` | `supertonic` |
+| `TTS_DOCKERFILE` | `Dockerfile.supertonic` \| `Dockerfile.kitten` | `Dockerfile.supertonic` |
+
+**Supertonic** (default) — uses `supertone-inc/supertonic` with Supertone voice assets. Higher quality output.
+
+**Kitten** — uses `KittenML/kitten-tts-micro-0.8`. Lightweight fallback, faster build, smaller image.
+
+Both engines expose the same Celery task interface (`convert_to_audio_task`, `synthesize_sentence_task`) on the same queues, so switching engines only requires changing these two env vars and redeploying.
+
 ### Resource Limits
 
 Edit `docker-compose.prod.yml` to adjust resource limits:

@@ -300,9 +300,9 @@ rsync -avz ${TEMP_REMOTE_COMPOSE} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/${
 rm ${TEMP_REMOTE_COMPOSE}
 
 echo "Building and starting converter on remote host..."
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} build $BUILD_CACHE_FLAG"
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} down"
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && docker compose -f ${REMOTE_COMPOSE_FILE} up -d --force-recreate"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && TTS_DOCKERFILE=${TTS_DOCKERFILE} TTS_ENGINE=${TTS_ENGINE} docker compose -f ${REMOTE_COMPOSE_FILE} build $BUILD_CACHE_FLAG"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && TTS_DOCKERFILE=${TTS_DOCKERFILE} TTS_ENGINE=${TTS_ENGINE} docker compose -f ${REMOTE_COMPOSE_FILE} down"
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && TTS_DOCKERFILE=${TTS_DOCKERFILE} TTS_ENGINE=${TTS_ENGINE} docker compose -f ${REMOTE_COMPOSE_FILE} up -d --force-recreate"
 
 # Wait for Converter to be healthy
 WAITED=0
