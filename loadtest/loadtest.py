@@ -665,7 +665,7 @@ async def run_user(idx: int, client: SupabaseClient, pdf_path: Path,
             try:
                 latency, duration = await synth_tasks[i]
             except Exception as e:
-                log(f"[User {idx}] Sentence {i}: synthesis FAILED ({e})")
+                log(f"[User {idx}] Sentence {i}: synthesis FAILED ({type(e).__name__}: {e!r})")
                 result.synthesis_latencies.append(-1.0)
                 i += 1
                 fire_synth(i + PREFETCH_AHEAD)
