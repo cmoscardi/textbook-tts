@@ -22,12 +22,9 @@ done
 echo "RabbitMQ is available"
 
 # Start Celery worker(s)
-# KittenTTS uses onnxruntime which isn't fork-safe, so we spin up
+# Both KittenTTS and Supertonic use onnxruntime which isn't fork-safe, so we spin up
 # separate solo-pool processes instead of using prefork.
-NUM_WORKERS="${CONVERTER_WORKERS:-1}"
-if [ "$TTS_ENGINE" = "kitten" ]; then
-    NUM_WORKERS="${CONVERTER_WORKERS:-10}"
-fi
+NUM_WORKERS="${CONVERTER_WORKERS:-10}"
 
 if [ "$NUM_WORKERS" -eq 1 ]; then
     exec celery -A $WORKER_MODULE worker \
