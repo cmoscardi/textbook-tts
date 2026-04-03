@@ -102,6 +102,24 @@ services:
     depends_on:
       - rabbitmq
 
+  fast-parser:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.fast-parser
+    container_name: fast-parser
+    environment:
+      - WORKER_TYPE=fast-parser
+    volumes:
+      - ./ml-service:/app
+    working_dir: /app
+    command: ./run-fast-parser.sh
+    env_file:
+      - .env.development
+    networks:
+      - supabase_network_textbook-tts
+    depends_on:
+      - rabbitmq
+
   rabbitmq:
     container_name: rabbitmq
     image: rabbitmq:3-management

@@ -9,8 +9,13 @@ import time
 import os
 from typing import Annotated
 
-from task_client import send_parse_task, send_datalab_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task, client_app
+import tempfile
+import requests as http_requests
+
+from task_client import send_parse_task, send_datalab_parse_task, send_fast_parse_task, send_convert_task, send_synthesize_task, send_ingest_email_task, client_app
 from email_alerts import setup_email_logging, send_alert
+from fast_parser import classify_pdf
+from worker_utils import initialize_supabase, get_file_info
 from prometheus_fastapi_instrumentator import Instrumentator
 
 # Configure logging
@@ -82,6 +87,9 @@ async def alert_on_error_response(request: Request, call_next):
     return response
 
 Instrumentator().instrument(app).expose(app)
+
+# Initialize Supabase client for PDF triage (download + classify before routing)
+supabase = initialize_supabase()
 
 logger.info("FastAPI application initialized with CORS enabled")
 
@@ -170,13 +178,49 @@ class IngestEmailRequest(BaseModel):
 
 
 
+def _triage_pdf(file_id: str) -> str:
+    """Download PDF and classify as 'simple' or 'complex'.
+
+    Returns 'complex' on any error (fail-safe to GPU).
+    """
+    temp_file = None
+    try:
+        file_info = get_file_info(file_id, supabase)
+        if not file_info:
+            logger.warning(f"Triage: could not get file info for {file_id}, defaulting to complex")
+            return "complex"
+
+        response = http_requests.get(file_info.signed_url, timeout=30)
+        response.raise_for_status()
+
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix=f"triage_{file_id}_", suffix=".pdf", delete=False
+        ).name
+        with open(temp_file, "wb") as f:
+            f.write(response.content)
+
+        classification = classify_pdf(temp_file)
+        logger.info(f"Triage result for {file_id}: {classification}")
+        return classification
+    except Exception as e:
+        logger.warning(f"Triage error for {file_id}, defaulting to complex: {e}")
+        return "complex"
+    finally:
+        if temp_file:
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+
+
 @app.post("/parse")
 def parse(request: ParseRequest, auth: RequireAuth):
     """
     Parse PDF endpoint that extracts text from a PDF and saves to database.
     This is step 1 of the split workflow (parse → convert).
 
-    Falls back to Datalab API when the GPU parser is busy.
+    Triages PDFs: simple native-text PDFs go to fast CPU parser,
+    complex PDFs go to GPU parser (or Datalab API if GPU is busy).
 
     Requires authentication via ML-Auth-Key header.
     """
@@ -184,6 +228,14 @@ def parse(request: ParseRequest, auth: RequireAuth):
     logger.info(f"Received parse request for file_id: {file_id}")
 
     try:
+        classification = _triage_pdf(file_id)
+
+        if classification == "simple":
+            fut = send_fast_parse_task(file_id)
+            logger.info(f"Routed to fast parser (task {fut.id}) for file_id: {file_id}")
+            return {"id": fut.id, "task_type": "parse"}
+
+        # Complex: GPU if available, Datalab if busy
         if is_parser_busy():
             logger.info(f"GPU parser busy, routing to Datalab API for file_id: {file_id}")
             fut = send_datalab_parse_task(file_id)

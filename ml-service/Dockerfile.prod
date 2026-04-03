@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir \
     celery sqlalchemy psycopg2 \
     marker-pdf \
     pypdf \
+    PyMuPDF \
     supabase \
     pydub \
     gunicorn \

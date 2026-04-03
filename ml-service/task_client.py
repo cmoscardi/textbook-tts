@@ -25,6 +25,7 @@ client_app.conf.update(
 # Task name constants
 PARSE_PDF_TASK = 'ml_worker.parse_pdf_task'
 PARSE_PDF_DATALAB_TASK = 'datalab_worker.parse_pdf_datalab_task'
+FAST_PARSE_TASK = 'fast_parser_worker.fast_parse_pdf_task'
 INGEST_EMAIL_TASK = 'ml_worker.ingest_email_task'
 
 # TTS engine selection: task names are derived from the worker module name
@@ -56,6 +57,15 @@ def send_datalab_parse_task(file_id: str):
         PARSE_PDF_DATALAB_TASK,
         args=[file_id],
         queue='datalab_parse_queue'
+    )
+
+def send_fast_parse_task(file_id: str):
+    """Send PDF to fast (PyMuPDF) parser for simple, native-text PDFs"""
+    logger.info(f"Sending fast parse task for file_id: {file_id}")
+    return client_app.send_task(
+        FAST_PARSE_TASK,
+        args=[file_id],
+        queue='fast_parse_queue'
     )
 
 def send_convert_task(file_id: str):

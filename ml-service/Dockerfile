@@ -26,6 +26,7 @@ RUN pip install python-doctr \
     celery sqlalchemy psycopg2 \
     marker-pdf \
     pypdf \
+    PyMuPDF \
     jupyter watchdog \
     supabase \
     pydub \
