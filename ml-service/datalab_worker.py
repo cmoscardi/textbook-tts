@@ -51,7 +51,9 @@ logger.info(f"Initializing Celery with RabbitMQ host: {rabbitmq_host}")
 
 supabase = wu.initialize_supabase()
 
-app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postgres_url)
+rabbitmq_user = os.environ.get("RABBITMQ_USER", "guest")
+rabbitmq_pass = os.environ.get("RABBITMQ_PASS", "guest")
+app = Celery(__name__, broker=f'pyamqp://{rabbitmq_user}:{rabbitmq_pass}@{rabbitmq_host}//', backend=postgres_url)
 
 app.conf.update(
     broker_heartbeat=0,

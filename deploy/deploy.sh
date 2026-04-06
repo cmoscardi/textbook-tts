@@ -104,8 +104,16 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 echo "All required Supabase environment variables are set."
 
-echo -e "${GREEN}Step 3: Creating shared Docker network...${NC}"
+echo -e "${GREEN}Step 3: Creating shared Docker network and configuring firewall...${NC}"
 docker network create ml_network || true
+
+# Open RabbitMQ AMQP port for DigitalOcean autoscaler droplets (secured by auth)
+if command -v ufw &>/dev/null; then
+    sudo ufw allow 5672/tcp comment "RabbitMQ AMQP - DO autoscaler droplets"
+    echo "ufw: allowed port 5672 (RabbitMQ AMQP)"
+else
+    echo -e "${YELLOW}Warning: ufw not found. Make sure port 5672 is open for DO autoscaler droplets.${NC}"
+fi
 
 echo -e "${GREEN}Step 4: Running Supabase database migrations...${NC}"
 npx supabase db push --db-url "$DATABASE_URL" --password "$POSTGRES_PASSWORD" || {
@@ -191,7 +199,7 @@ npx supabase secrets set \
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
 echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
-docker compose -f "$COMPOSE_FILE" build $BUILD_CACHE_FLAG ml-api parser datalab-parser fast-parser celery-beat
+docker compose -f "$COMPOSE_FILE" build $BUILD_CACHE_FLAG ml-api parser datalab-parser fast-parser celery-beat autoscaler
 
 echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
 docker compose -f "$COMPOSE_FILE" down
@@ -278,6 +286,15 @@ echo "Starting monitoring services (Prometheus, Grafana, Flower, node_exporter, 
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate prometheus grafana node_exporter gpu_exporter flower
 echo -e "${GREEN}Monitoring services started.${NC}"
 
+echo "Starting DO autoscaler..."
+if [ -n "$DIGITALOCEAN_API_TOKEN" ] && [ -n "$MAIN_HOST_IP" ]; then
+    docker compose -f "$COMPOSE_FILE" up -d --force-recreate autoscaler
+    echo -e "${GREEN}Autoscaler started.${NC}"
+else
+    echo -e "${YELLOW}Skipping autoscaler: DIGITALOCEAN_API_TOKEN or MAIN_HOST_IP not set.${NC}"
+    echo "To enable autoscaling, set these in .env.production and re-run deploy."
+fi
+
 echo -e "${GREEN}Step 8: Deploying to Remote Host...${NC}"
 echo "Creating directories on remote host..."
 ssh ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/ml-service ${REMOTE_DIR}/hf-cache ${REMOTE_DIR}/dl-cache"
@@ -328,6 +345,40 @@ if [ "$FINAL_HEALTH" != "healthy" ]; then
     exit 1
 fi
 
+echo -e "${GREEN}Step 9: Checking if DO autoscaler snapshot needs rebuild...${NC}"
+# Hash all files that affect scalable worker images (Dockerfiles + Python source).
+# If the hash changed since last snapshot bake, rebuild the snapshot.
+SNAPSHOT_HASH_FILE=".last-snapshot-hash"
+CURRENT_HASH=$(find ml-service/ \
+    -name '*.py' -o -name 'Dockerfile.fast-parser' -o -name 'Dockerfile.datalab' \
+    -o -name "$TTS_DOCKERFILE" -o -name 'run-fast-parser.prod.sh' \
+    -o -name 'run-datalab-parser.prod.sh' -o -name 'run-converter.prod.sh' \
+    | sort | xargs cat | sha256sum | awk '{print $1}')
+
+PREVIOUS_HASH=""
+if [ -f "$SNAPSHOT_HASH_FILE" ]; then
+    PREVIOUS_HASH=$(cat "$SNAPSHOT_HASH_FILE")
+fi
+
+if [ "$CURRENT_HASH" != "$PREVIOUS_HASH" ]; then
+    if [ -n "$DIGITALOCEAN_API_TOKEN" ] && [ -n "$DO_SSH_KEY_FINGERPRINT" ]; then
+        echo -e "${YELLOW}Worker code changed since last snapshot — rebuilding DO autoscaler snapshot...${NC}"
+        if ./autoscaler/snapshot_bake.sh; then
+            echo "$CURRENT_HASH" > "$SNAPSHOT_HASH_FILE"
+            echo -e "${GREEN}Snapshot rebuild completed. Update snapshot IDs in .env.production.${NC}"
+        else
+            echo -e "${RED}Snapshot rebuild failed! Autoscaler droplets may use stale code.${NC}"
+            echo "Re-run manually: ./autoscaler/snapshot_bake.sh"
+        fi
+    else
+        echo -e "${YELLOW}Worker code changed but DIGITALOCEAN_API_TOKEN or DO_SSH_KEY_FINGERPRINT not set.${NC}"
+        echo "Skipping snapshot rebuild. To rebuild manually:"
+        echo "    ./autoscaler/snapshot_bake.sh"
+    fi
+else
+    echo "Worker code unchanged since last snapshot — skipping rebuild."
+fi
+
 echo ""
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Deployment completed successfully!${NC}"
@@ -347,9 +398,10 @@ echo "    - grafana-prod      (localhost:3000)"
 echo "    - node_exporter     (internal)"
 echo "    - gpu_exporter      (internal)"
 echo "    - flower-prod       (localhost:5555)"
+echo "    - autoscaler-prod   (DO droplet autoscaler, metrics :9095)"
 echo ""
 echo "  Remote Host (${REMOTE_HOST}):"
-echo "    - converter-prod    (GPU, convert_queue)"
+echo "    - converter-prod    (CPU, convert_queue)"
 echo ""
 echo "  Dashboard access (SSH tunnel):"
 echo "    ssh -L 3000:localhost:3000 -L 5555:localhost:5555 -L 9090:localhost:9090 <server>"

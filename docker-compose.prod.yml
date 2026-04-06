@@ -136,6 +136,23 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  autoscaler:
+    build:
+      context: ./autoscaler
+    container_name: autoscaler-prod
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - RABBITMQ_MGMT_URL=http://rabbitmq-prod:15672
+    volumes:
+      - autoscaler_state:/var/lib/autoscaler
+    networks:
+      - ml_network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared-prod
@@ -153,9 +170,12 @@ services:
     image: rabbitmq:3-management
     container_name: rabbitmq-prod
     restart: unless-stopped
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
     ports:
       - "127.0.0.1:15672:15672" # Management UI local only
-      # - "${MAIN_HOST_TUN0}:5672:5672"   # Bind AMQP to tun0 only (accessible from remote host)
+      - "0.0.0.0:5672:5672"     # AMQP — secured by auth + firewall (for DO autoscaler droplets)
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./monitoring/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
@@ -239,7 +259,9 @@ services:
     image: mher/flower:2.0
     container_name: flower-prod
     restart: unless-stopped
-    command: celery --broker=amqp://guest@rabbitmq// flower --port=5555
+    env_file:
+      - .env.production
+    command: celery --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq// flower --port=5555
     ports:
       - "127.0.0.1:5555:5555"
     depends_on:
@@ -258,4 +280,6 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  autoscaler_state:
     driver: local

@@ -49,7 +49,9 @@ except OSError as e:
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
 logger.info(f"Initializing Celery with RabbitMQ host: {rabbitmq_host}")
-app = Celery(__name__, broker=f'pyamqp://guest@{rabbitmq_host}//', backend=postgres_url)
+rabbitmq_user = os.environ.get("RABBITMQ_USER", "guest")
+rabbitmq_pass = os.environ.get("RABBITMQ_PASS", "guest")
+app = Celery(__name__, broker=f'pyamqp://{rabbitmq_user}:{rabbitmq_pass}@{rabbitmq_host}//', backend=postgres_url)
 
 # Celery configuration for long-running GPU tasks
 app.conf.update(

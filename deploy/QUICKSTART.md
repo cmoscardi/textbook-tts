@@ -147,11 +147,81 @@ docker info | grep nvidia
 docker exec -it ml-service-prod nvidia-smi
 ```
 
+## Optional: DigitalOcean Autoscaler
+
+The autoscaler creates/destroys DO droplets to handle queue backlogs for CPU workers (fast-parser, datalab-parser, converter). GPU parsing always stays local.
+
+### Prerequisites
+
+- DigitalOcean account with API token
+- An SSH key added to your DO account (get fingerprint from DO dashboard)
+- `ufw` installed and enabled (deploy.sh auto-adds the port 5672 rule)
+
+### Setup
+
+**1. Configure env vars** (`MAIN_HOST_IP` is required — it's your server's public IP so droplets can reach RabbitMQ):
+
+```bash
+# In .env.production:
+DIGITALOCEAN_API_TOKEN=your-do-api-token
+DO_REGION=nyc3                              # match your server's region
+DO_SSH_KEY_FINGERPRINT=ab:cd:ef:...        # from DO dashboard
+MAIN_HOST_IP=1.2.3.4                       # this server's public IP
+AUTOSCALER_MONTHLY_COST_CAP=50             # hard spend cap in USD
+```
+
+**2. Bake worker snapshots** (one-time, re-run if worker code changes):
+
+```bash
+./autoscaler/snapshot_bake.sh
+# Prints snapshot IDs — copy them into .env.production:
+DO_FAST_PARSER_SNAPSHOT_ID=123456789
+DO_DATALAB_PARSER_SNAPSHOT_ID=123456790
+DO_CONVERTER_SNAPSHOT_ID=123456791
+```
+
+**3. Deploy** — the autoscaler container starts automatically when `DIGITALOCEAN_API_TOKEN` and `MAIN_HOST_IP` are set:
+
+```bash
+./deploy/deploy.sh
+```
+
+**4. Verify**:
+
+```bash
+# Check autoscaler logs
+docker compose -f docker-compose.prod.yml logs -f autoscaler
+
+# Check Prometheus metrics (port 9095 inside ml_network)
+# or view in Grafana → autoscaler dashboard
+
+# Manually trigger scale-up test (flood a queue, watch logs)
+docker compose -f docker-compose.prod.yml logs -f autoscaler | grep "SCALE"
+```
+
+### Snapshot rebuild
+
+Re-run `./autoscaler/snapshot_bake.sh` whenever worker Dockerfiles or Python source changes. `deploy.sh` checks for this automatically and prompts if a rebuild is needed. After a rebuild, update the snapshot IDs in `.env.production` and redeploy.
+
+### Troubleshooting
+
+```bash
+# Autoscaler can't reach RabbitMQ management API
+docker exec autoscaler-prod curl -s http://rabbitmq-prod:15672/api/healthchecks/node
+
+# DO droplets not connecting (check MAIN_HOST_IP and ufw rule)
+sudo ufw status | grep 5672
+nc -zv $MAIN_HOST_IP 5672
+
+# Orphaned droplets (autoscaler reconciles on restart)
+docker compose -f docker-compose.prod.yml restart autoscaler
+```
+
 ## Security Checklist
 
 - [ ] Changed all default passwords
 - [ ] Using full JWT for Supabase service role key
-- [ ] RabbitMQ not exposed to internet (only via internal network)
+- [ ] RabbitMQ port 5672 open only for autoscaler droplets (secured by RABBITMQ_USER/PASS + ufw)
 - [ ] ML service behind reverse proxy with SSL
 - [ ] Firewall configured (only ports 80, 443, 22 open)
 - [ ] SSH key authentication enabled, password auth disabled

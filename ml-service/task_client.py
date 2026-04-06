@@ -8,9 +8,11 @@ logger = logging.getLogger(__name__)
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
 
+rabbitmq_user = os.environ.get("RABBITMQ_USER", "guest")
+rabbitmq_pass = os.environ.get("RABBITMQ_PASS", "guest")
 client_app = Celery(
     'task_client',
-    broker=f'pyamqp://guest@{rabbitmq_host}//',
+    broker=f'pyamqp://{rabbitmq_user}:{rabbitmq_pass}@{rabbitmq_host}//',
     backend=postgres_url
 )
 

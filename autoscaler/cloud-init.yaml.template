@@ -1,0 +1,19 @@
+#!/bin/bash
+# Cloud-init user data for autoscaler droplets.
+# Variables are substituted by autoscaler.py _make_user_data().
+
+cat >> /etc/environment <<'ENVEOF'
+RABBITMQ_HOST=${MAIN_HOST_IP}
+RABBITMQ_USER=${RABBITMQ_USER}
+RABBITMQ_PASS=${RABBITMQ_PASS}
+DATABASE_CELERY_URL=${DATABASE_CELERY_URL}
+SUPABASE_URL=${SUPABASE_URL}
+SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+DATALAB_API_KEY=${DATALAB_API_KEY}
+TTS_ENGINE=${TTS_ENGINE}
+CONVERTER_WORKERS=5
+WORKER_TYPE=${WORKER_TYPE}
+ENVEOF
+
+set -a; source /etc/environment; set +a
+/opt/autoscaler/start-worker.sh
