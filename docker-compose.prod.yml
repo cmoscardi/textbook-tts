@@ -120,6 +120,22 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  celery-beat:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.beat
+    container_name: celery-beat-prod
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env.production
+    command: celery -A beat_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    networks:
+      - ml_network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared-prod

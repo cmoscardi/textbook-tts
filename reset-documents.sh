@@ -47,6 +47,7 @@ fi
 echo ""
 echo "This will DELETE:"
 echo "  - All files, file_parsings, file_conversions, file_pages, page_sentences"
+echo "  - All Celery task results (celery_taskmeta)"
 echo "  - All objects in Supabase storage bucket 'files'"
 echo ""
 echo "This will PRESERVE:"
@@ -68,6 +69,10 @@ fi
 echo "==> Deleting all document data from database..."
 DELETED=$(psql "$PGCONN" -t -A -c "DELETE FROM files RETURNING file_id" | wc -l | tr -d ' ')
 echo "    Deleted $DELETED file(s) (cascaded to parsings, conversions, pages, sentences)"
+
+echo "==> Truncating Celery task results (celery_taskmeta)..."
+psql "$PGCONN" -c "TRUNCATE TABLE celery_taskmeta;"
+echo "    celery_taskmeta truncated"
 
 # --- Storage cleanup ---
 echo "==> Clearing Supabase storage bucket 'files'..."

@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+
+RUN pip install celery sqlalchemy psycopg2-binary
+
+WORKDIR /app
+COPY beat_app.py ./

@@ -191,7 +191,7 @@ npx supabase secrets set \
 echo -e "${GREEN}All edge functions deployed and configured successfully.${NC}"
 
 echo -e "${GREEN}Step 6: Building Docker images for Main Host...${NC}"
-docker compose -f "$COMPOSE_FILE" build $BUILD_CACHE_FLAG ml-api parser datalab-parser fast-parser
+docker compose -f "$COMPOSE_FILE" build $BUILD_CACHE_FLAG ml-api parser datalab-parser fast-parser celery-beat
 
 echo -e "${GREEN}Step 7: Deploying to Main Host...${NC}"
 docker compose -f "$COMPOSE_FILE" down
@@ -223,8 +223,8 @@ if [ "$FINAL_HEALTH" != "healthy" ]; then
     exit 1
 fi
 
-echo "Starting ML API, Parser, Datalab Parser, Fast Parser, and Cloudflare Tunnel..."
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate ml-api parser datalab-parser fast-parser cloudflared
+echo "Starting ML API, Parser, Datalab Parser, Fast Parser, Celery Beat, and Cloudflare Tunnel..."
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate ml-api parser datalab-parser fast-parser celery-beat cloudflared
 
 # Wait for ML API to be healthy
 WAITED=0
@@ -339,6 +339,7 @@ echo "    - ml-api-prod           (port 8001)"
 echo "    - parser-prod           (GPU 0, parse_queue)"
 echo "    - datalab-parser-prod   (CPU, datalab_parse_queue, 5 workers)"
 echo "    - fast-parser-prod      (CPU, fast_parse_queue, 5 workers)"
+echo "    - celery-beat-prod      (backend_cleanup scheduler)"
 echo "    - cloudflared-prod      (tunnel to ml-tunnel.textbook-tts.com)"
 echo "    - rabbitmq-prod     (port 5672 on ${MAIN_HOST_TUN0})"
 echo "    - prometheus-prod   (localhost:9090)"
@@ -363,6 +364,7 @@ echo "    docker compose -f $COMPOSE_FILE logs -f ml-api"
 echo "    docker compose -f $COMPOSE_FILE logs -f parser"
 echo "    docker compose -f $COMPOSE_FILE logs -f datalab-parser"
 echo "    docker compose -f $COMPOSE_FILE logs -f fast-parser"
+echo "    docker compose -f $COMPOSE_FILE logs -f celery-beat"
 echo "    docker compose -f $COMPOSE_FILE logs -f rabbitmq"
 echo "    docker compose -f $COMPOSE_FILE logs -f grafana"
 echo ""
