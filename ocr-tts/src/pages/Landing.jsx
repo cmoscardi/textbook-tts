@@ -19,6 +19,14 @@ export default function Landing() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
+      <div className="flex justify-end px-8 py-6">
+        <Link
+          to="/app"
+          className="inline-block px-6 py-2.5 border border-gray-500 hover:border-white text-white text-base font-semibold rounded-lg transition-colors hover:bg-white hover:text-gray-900"
+        >
+          Log in
+        </Link>
+      </div>
       <div className="flex-1 flex flex-col items-center justify-center px-4">
         <div className="max-w-2xl text-center">
           {/* Main headline */}
@@ -48,7 +56,7 @@ export default function Landing() {
 
           {/* CTA */}
           <Link
-            to="/app"
+            to="/app?mode=sign_up"
             className="inline-block px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-semibold rounded-lg transition-colors"
           >
             Get Started

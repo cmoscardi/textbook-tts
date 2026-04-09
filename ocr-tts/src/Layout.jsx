@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Outlet, Link } from "react-router-dom";
+import { Outlet, Link, useSearchParams } from "react-router-dom";
 import { Turnstile } from '@marsidev/react-turnstile';
 
 import { supabase } from './lib/supabase.js';
@@ -8,7 +8,9 @@ import UsageBadge from './components/UsageBadge.jsx';
 import Footer from './components/Footer.jsx';
 
 function AuthForm() {
-  const [mode, setMode] = useState('sign_in'); // 'sign_in' | 'sign_up' | 'forgot_password'
+  const [searchParams] = useSearchParams();
+  const initialMode = searchParams.get('mode') === 'sign_up' ? 'sign_up' : 'sign_in';
+  const [mode, setMode] = useState(initialMode); // 'sign_in' | 'sign_up' | 'forgot_password'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -62,63 +64,68 @@ function AuthForm() {
     }
   };
 
-  const inputClass = "w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm";
+  const inputClass = "w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm text-white placeholder-gray-500";
   const btnClass = "w-full py-2 px-4 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50";
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
+    <div className="min-h-screen flex flex-col bg-gray-900 text-white">
+      <div className="px-8 py-6">
+        <Link to="/" className="text-gray-400 hover:text-white text-sm transition-colors">← Back to home</Link>
+      </div>
       <div className="flex-1 flex items-center justify-center">
-      <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-sm">
-        <h2 className="text-xl font-bold text-gray-800 mb-6">
-          {mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Create account' : 'Reset password'}
-        </h2>
+      <div className="flex flex-col items-center gap-4 w-full max-w-sm">
+        <div className="bg-gray-800 border border-gray-700 p-8 rounded-lg shadow-lg w-full">
+          <h2 className="text-xl font-bold text-white mb-6">
+            {mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Create account' : 'Reset password'}
+          </h2>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <input
-            type="email"
-            placeholder="Email address"
-            required
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            className={inputClass}
-          />
-
-          {mode !== 'forgot_password' && (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <input
-              type="password"
-              placeholder="Password"
+              type="email"
+              placeholder="Email address"
               required
-              value={password}
-              onChange={e => setPassword(e.target.value)}
+              value={email}
+              onChange={e => setEmail(e.target.value)}
               className={inputClass}
             />
-          )}
 
-          <Turnstile
-            ref={turnstileRef}
-            siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
-            onSuccess={setCaptchaToken}
-            onExpire={resetCaptcha}
-            onError={resetCaptcha}
-          />
+            {mode !== 'forgot_password' && (
+              <input
+                type="password"
+                placeholder="Password"
+                required
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                className={inputClass}
+              />
+            )}
 
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          {message && <p className="text-green-600 text-sm">{message}</p>}
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {message && <p className="text-green-400 text-sm">{message}</p>}
 
-          <button type="submit" disabled={submitting || !captchaToken} className={btnClass}>
-            {submitting ? 'Please wait...' : mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Sign up' : 'Send reset link'}
-          </button>
-        </form>
+            <button type="submit" disabled={submitting || !captchaToken} className={btnClass}>
+              {submitting ? 'Please wait...' : mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Sign up' : 'Send reset link'}
+            </button>
+          </form>
 
-        <div className="mt-4 flex flex-col gap-2 text-sm text-center">
-          {mode === 'sign_in' && (<>
-            <button onClick={() => { setMode('sign_up'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-600 hover:underline">Don't have an account? Sign up</button>
-            <button onClick={() => { setMode('forgot_password'); setError(''); setMessage(''); resetCaptcha(); }} className="text-gray-500 hover:underline">Forgot your password?</button>
-          </>)}
-          {mode !== 'sign_in' && (
-            <button onClick={() => { setMode('sign_in'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-600 hover:underline">Already have an account? Sign in</button>
-          )}
+          <div className="mt-4 flex flex-col gap-2 text-sm text-center">
+            {mode === 'sign_in' && (<>
+              <button onClick={() => { setMode('sign_up'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-400 hover:underline">Don't have an account? Sign up</button>
+              <button onClick={() => { setMode('forgot_password'); setError(''); setMessage(''); resetCaptcha(); }} className="text-gray-500 hover:underline">Forgot your password?</button>
+            </>)}
+            {mode !== 'sign_in' && (
+              <button onClick={() => { setMode('sign_in'); setError(''); setMessage(''); resetCaptcha(); }} className="text-blue-400 hover:underline">Already have an account? Sign in</button>
+            )}
+          </div>
         </div>
+
+        <Turnstile
+          ref={turnstileRef}
+          siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
+          onSuccess={setCaptchaToken}
+          onExpire={resetCaptcha}
+          onError={resetCaptcha}
+        />
       </div>
       </div>
       <Footer />
