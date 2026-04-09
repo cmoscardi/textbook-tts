@@ -307,8 +307,9 @@ docker exec -it ml-service-prod netstat -tlnp
 
 ### 2. Network Security
 
-- Don't expose RabbitMQ ports (5672, 15672) to the internet
-- Use internal Docker networks
+- Port 15672 (RabbitMQ management UI) must never be exposed — it's bound to localhost only
+- Port 5672 (AMQP) is exposed only if using the DO autoscaler, secured by `RABBITMQ_USER`/`RABBITMQ_PASS` + ufw
+- Use internal Docker networks for all other inter-service communication
 - Put everything behind a reverse proxy with SSL
 - Implement rate limiting (shown in nginx.conf)
 
@@ -418,6 +419,162 @@ For issues or questions:
 
 ---
 
+
+## DigitalOcean Autoscaler
+
+The autoscaler daemon monitors RabbitMQ queue depths and creates/destroys DigitalOcean droplets to scale CPU workers on demand. GPU parsing (`parse_queue`) always stays local. The three scalable worker types are:
+
+| Queue | Worker | Droplet size | Max droplets |
+|-------|--------|-------------|-------------|
+| `fast_parse_queue` | fast-parser | s-1vcpu-1gb ($6/mo) | 3 |
+| `datalab_parse_queue` | datalab-parser | s-1vcpu-1gb ($6/mo) | 3 |
+| `convert_queue` | converter (TTS) | s-2vcpu-2gb ($12/mo) | 3 |
+
+The autoscaler runs as a separate Docker container outside the main compose stack, since it needs access to the DO API and manages its own state.
+
+### Prerequisites
+
+- DigitalOcean account and API token
+- `doctl` CLI installed locally for baking snapshots (`brew install doctl` / `snap install doctl`)
+- SSH key added to your DO account (optional — only needed for debugging into droplets)
+
+### Environment Variables
+
+Add these to `.env.production` (see `.env.production.example` for all options):
+
+```bash
+DIGITALOCEAN_API_TOKEN=your-do-api-token
+DO_REGION=nyc3                          # should match your server's region
+DO_SSH_KEY_FINGERPRINT=ab:cd:ef:...    # from DO dashboard (optional, for debug SSH access)
+MAIN_HOST_IP=your-server-ip-or-hostname # public address DO droplets use to reach RabbitMQ
+AUTOSCALER_MONTHLY_COST_CAP=50         # hard spend cap in USD
+```
+
+### Expose RabbitMQ for DO Droplets
+
+DO droplets connect to RabbitMQ over the internet. Two things needed:
+
+**1. Expose port 5672** in `docker-compose.prod.yml` under the `rabbitmq` service — uncomment this line:
+
+```yaml
+# - "${MAIN_HOST_TUN0}:5672:5672"   # Bind AMQP to tun0 only (accessible from remote host)
+```
+
+Or bind to all interfaces if you don't have a dedicated interface:
+
+```yaml
+- "0.0.0.0:5672:5672"
+```
+
+**2. Open the port in ufw:**
+
+```bash
+sudo ufw allow 5672/tcp comment "RabbitMQ AMQP - DO autoscaler droplets"
+```
+
+Port 5672 is secured by `RABBITMQ_USER`/`RABBITMQ_PASS` credentials — droplets that don't have the credentials can't authenticate.
+
+### Bake Worker Snapshots (One-time Setup)
+
+The autoscaler boots droplets from a pre-baked snapshot that already has Docker and the worker images installed. Build it with:
+
+```bash
+# Source env so the script has DO credentials
+source .env.production
+./autoscaler/snapshot_bake.sh
+```
+
+This takes ~10 minutes. When done it prints a snapshot name — get its ID and update `.env.production`:
+
+```bash
+doctl compute snapshot list --format ID,Name | grep autoscaler-workers
+# Then set in .env.production:
+DO_FAST_PARSER_SNAPSHOT_ID=123456789
+DO_DATALAB_PARSER_SNAPSHOT_ID=123456789   # same snapshot for all three
+DO_CONVERTER_SNAPSHOT_ID=123456789        # WORKER_TYPE env var selects the image at boot
+```
+
+Re-run `snapshot_bake.sh` whenever worker Dockerfiles or Python source changes.
+
+### Running the Autoscaler
+
+Build and start the autoscaler container (runs outside the main compose stack, but joins the same network):
+
+```bash
+docker build -t autoscaler autoscaler/
+docker run -d \
+  --name autoscaler-prod \
+  --restart unless-stopped \
+  --env-file .env.production \
+  -e RABBITMQ_MGMT_URL=http://rabbitmq-prod:15672 \
+  --network ml_network \
+  -v autoscaler_state:/var/lib/autoscaler \
+  autoscaler
+```
+
+The autoscaler will log scale-up/down events and errors:
+
+```bash
+docker logs -f autoscaler-prod
+```
+
+To restart after a config change:
+
+```bash
+docker rm -f autoscaler-prod
+# re-run docker run ... above
+```
+
+### Monitoring
+
+The autoscaler exposes Prometheus metrics on port 9095 inside `ml_network`. To scrape them, add to `monitoring/prometheus/prometheus.prod.yml`:
+
+```yaml
+- job_name: 'autoscaler'
+  static_configs:
+    - targets: ['autoscaler-prod:9095']
+```
+
+Key metrics:
+- `autoscaler_active_droplets{worker_type}` — current live droplets per type
+- `autoscaler_scale_events_total{action,worker_type}` — cumulative scale up/down events
+- `autoscaler_monthly_cost_usd` — estimated spend this month
+- `autoscaler_queue_depth{queue}` — queue depths (mirrored from RabbitMQ)
+
+Email alerts fire on scale events, capacity warnings (queue still deep at max droplets), and cost cap approach. Configure SMTP in `.env.production` (`smtp_*` vars).
+
+### Troubleshooting
+
+**Autoscaler can't reach RabbitMQ management API:**
+```bash
+docker exec autoscaler-prod curl -s http://rabbitmq-prod:15672/api/healthchecks/node
+# If that fails, check autoscaler is on ml_network: docker inspect autoscaler-prod
+```
+
+**DO droplets not connecting to RabbitMQ:**
+```bash
+# Verify port 5672 is open
+sudo ufw status | grep 5672
+nc -zv $MAIN_HOST_IP 5672
+
+# Check MAIN_HOST_IP is set correctly (must be reachable from the internet)
+docker exec autoscaler-prod env | grep MAIN_HOST_IP
+```
+
+**Worker on droplet not starting:**
+```bash
+ssh root@<droplet-ip>
+cat /var/log/cloud-init-output.log  # cloud-init startup
+docker logs worker                   # worker container logs
+```
+
+**Orphaned droplets after autoscaler crash:**
+```bash
+docker rm -f autoscaler-prod
+# re-run docker run ... — autoscaler reconciles state with DO API on startup
+```
+
+---
 
 ## Manual supabase stuff
 0. After starting ML service backend, Enable RLS on the tables that Celery auto-creates
