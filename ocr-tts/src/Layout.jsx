@@ -5,6 +5,7 @@ import { Turnstile } from '@marsidev/react-turnstile';
 import { supabase } from './lib/supabase.js';
 import { useSession } from './lib/SessionContext.jsx';
 import UsageBadge from './components/UsageBadge.jsx';
+import Footer from './components/Footer.jsx';
 
 function AuthForm() {
   const [mode, setMode] = useState('sign_in'); // 'sign_in' | 'sign_up' | 'forgot_password'
@@ -65,7 +66,8 @@ function AuthForm() {
   const btnClass = "w-full py-2 px-4 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50";
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="min-h-screen flex flex-col bg-gray-50">
+      <div className="flex-1 flex items-center justify-center">
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-sm">
         <h2 className="text-xl font-bold text-gray-800 mb-6">
           {mode === 'sign_in' ? 'Sign in' : mode === 'sign_up' ? 'Create account' : 'Reset password'}
@@ -118,6 +120,8 @@ function AuthForm() {
           )}
         </div>
       </div>
+      </div>
+      <Footer />
     </div>
   );
 }
@@ -169,7 +173,8 @@ export default function Layout() {
   // Check if user is disabled
   if (session && userEnabled === false) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex flex-col bg-gray-50">
+        <div className="flex-1 flex flex-col items-center justify-center">
         <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-8 text-center">
           <div className="mb-6">
             <svg className="mx-auto h-16 w-16 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -187,6 +192,8 @@ export default function Layout() {
             Sign Out
           </button>
         </div>
+        </div>
+        <Footer />
       </div>
     );
   }
@@ -291,6 +298,7 @@ export default function Layout() {
           </div>
         </main>
       </div>
+      <Footer />
     </div>
   );
 }
