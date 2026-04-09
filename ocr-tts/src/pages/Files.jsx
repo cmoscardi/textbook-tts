@@ -455,6 +455,16 @@ export default function Files() {
         <UploadSection onUploadComplete={handleUploadComplete} />
       </div>
 
+      {/* Email tip */}
+      <div className="mb-8 flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
+        <span className="mt-0.5">✉️</span>
+        <p>
+          You can also email  —{' '}
+          <a href="mailto:add@textbook-tts.com" className="font-semibold underline hover:text-blue-600">add@textbook-tts.com</a>
+          {' '}— and it will show up here automatically.
+        </p>
+      </div>
+
       {/* Error Display */}
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
