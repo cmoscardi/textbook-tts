@@ -70,9 +70,6 @@ export default function Landing() {
               </button>
             </div>
 
-            <p className="mt-8 text-gray-600 text-sm">
-              Really, that's it.
-            </p>
           </div>
         </div>
       </div>
