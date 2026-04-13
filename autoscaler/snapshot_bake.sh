@@ -10,8 +10,14 @@ set -e
 #   - SSH key registered with DO (DO_SSH_KEY_FINGERPRINT in .env.production)
 #
 # Usage:
-#   source .env.production
 #   ./autoscaler/snapshot_bake.sh
+#
+
+# we are in autoscaler/
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# cd to project root
+cd $SCRIPT_DIR/..
+
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -23,6 +29,8 @@ SIZE="s-2vcpu-4gb"  # Larger for building images, snapshot is size-independent
 BASE_IMAGE="ubuntu-24-04-x64"
 DROPLET_NAME="snapshot-bake-$(date +%s)"
 SNAPSHOT_NAME="autoscaler-workers-$(date +%Y%m%d-%H%M%S)"
+
+source .env.production
 
 if [ -z "$DIGITALOCEAN_API_TOKEN" ]; then
     echo -e "${RED}Error: DIGITALOCEAN_API_TOKEN not set${NC}"
