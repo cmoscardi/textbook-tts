@@ -140,6 +140,7 @@ def _dev_mode_parse(file_id, parsing_id, task_id):
         "Test mode CAPTCHA tokens bypass verification during load testing.",
         "This is the final sentence in the dev mode stub document.",
     ]
+    stub_sentences = stub_sentences * 5
     stub_text = " ".join(stub_sentences)
 
     delete_file_pages(file_id, supabase)

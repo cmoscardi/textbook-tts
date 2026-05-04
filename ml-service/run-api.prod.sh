@@ -12,6 +12,11 @@ if [ "$DB_EXISTS" != "1" ]; then
     createdb -U "$POSTGRES_USER" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" "$CELERY_DB" 2>/dev/null || true
 fi
 
+# Required for prometheus_client multiprocess mode (gunicorn forks 4 workers,
+# each with independent in-memory counters without this — causes phantom rate spikes)
+export PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
+mkdir -p $PROMETHEUS_MULTIPROC_DIR
+
 # Start FastAPI with Gunicorn
 exec gunicorn api:app \
     --workers 4 \

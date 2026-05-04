@@ -24,6 +24,9 @@ def get_queue_depths():
         )
         resp.raise_for_status()
         queues = resp.json()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        logger.warning(f"RabbitMQ management API unavailable (transient): {e}")
+        return None
     except requests.RequestException as e:
         logger.error(f"Failed to fetch queue depths: {e}")
         raise

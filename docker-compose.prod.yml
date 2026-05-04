@@ -170,9 +170,8 @@ services:
     image: rabbitmq:3-management
     container_name: rabbitmq-prod
     restart: unless-stopped
-    environment:
-      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
-      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
+    env_file:
+      - .env.production
     ports:
       - "127.0.0.1:15672:15672" # Management UI local only
       - "0.0.0.0:5672:5672"     # AMQP — secured by auth + firewall (for DO autoscaler droplets)

@@ -8,11 +8,13 @@ import os
 from celery import Celery
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST")
+rabbitmq_user = os.environ.get("RABBITMQ_USER", "guest")
+rabbitmq_pass = os.environ.get("RABBITMQ_PASS", "guest")
 postgres_url = os.environ.get("DATABASE_CELERY_URL")
 
 app = Celery(
     "beat_app",
-    broker=f"pyamqp://guest@{rabbitmq_host}//",
+    broker=f"pyamqp://{rabbitmq_user}:{rabbitmq_pass}@{rabbitmq_host}//",
     backend=postgres_url,
 )
 

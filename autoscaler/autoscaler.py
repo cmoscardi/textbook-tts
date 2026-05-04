@@ -348,15 +348,30 @@ def main():
         f"monthly hours: {state.get('monthly_hours', 0):.1f}"
     )
 
+    heartbeat_counter = 0
+    HEARTBEAT_CYCLES = 10  # every 10 × 30s = 5 minutes
+
     while True:
         try:
             _reset_monthly_if_needed(state)
 
             queue_depths = rabbitmq_client.get_queue_depths()
+            if queue_depths is None:
+                time.sleep(config.POLL_INTERVAL_S)
+                continue
+
             logger.debug(f"Queue depths: {queue_depths}")
 
             evaluate_and_act(state, queue_depths)
             _save_state(state)
+
+            heartbeat_counter += 1
+            if heartbeat_counter >= HEARTBEAT_CYCLES:
+                logger.info(
+                    f"Heartbeat: polling active, {_total_droplet_count(state)} managed droplets, "
+                    f"monthly cost ~${_estimate_monthly_cost(state):.2f}"
+                )
+                heartbeat_counter = 0
 
         except Exception as e:
             logger.error(f"Autoscaler loop error: {e}", exc_info=True)
