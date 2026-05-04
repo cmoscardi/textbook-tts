@@ -95,10 +95,21 @@ logger.info("FastAPI application initialized with CORS enabled")
 
 
 def is_parser_busy() -> bool:
-    """Check if the GPU parser is busy (active task) or has queued messages."""
+    """Check if the GPU parser is unavailable, busy (active task), or has queued messages."""
     try:
-        # Check if the worker has an active or reserved parse task
         inspector = client_app.control.inspect(timeout=2.0)
+
+        # If no worker is consuming parse_queue, treat as unavailable → fall back to Datalab
+        active_queues = inspector.active_queues() or {}
+        parse_workers = [
+            w for w, queues in active_queues.items()
+            if any(q.get('name') == 'parse_queue' for q in queues)
+        ]
+        if not parse_workers:
+            logger.info("No workers consuming parse_queue, routing to Datalab")
+            return True
+
+        # Check if the worker has an active or reserved parse task
         active = inspector.active() or {}
         reserved = inspector.reserved() or {}
         for worker, tasks in active.items():
