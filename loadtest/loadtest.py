@@ -912,7 +912,7 @@ async def run_load_test(args: argparse.Namespace) -> None:
     if failed:
         log(f"\nFailed users:")
         for r in failed:
-            log(f"  User {r.user_index}: {r.error} (reached: {r.phase_reached})")
+            log(f"  User {r.user_index} [{r.pdf_file}]: {r.error} (reached: {r.phase_reached})")
     log("=" * 60)
 
 
