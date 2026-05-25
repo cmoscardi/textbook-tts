@@ -5,11 +5,11 @@ services:
   converter:
     build:
       context: ./ml-service
-      dockerfile: ${TTS_DOCKERFILE:-Dockerfile.kitten}
+      dockerfile: ${TTS_DOCKERFILE:-Dockerfile.supertonic}
     container_name: converter-prod
     environment:
       - WORKER_TYPE=converter
-      - TTS_ENGINE=${TTS_ENGINE:-kitten}
+      - TTS_ENGINE=${TTS_ENGINE:-supertonic}
       - RABBITMQ_HOST=__MAIN_HOST_TUN0__  # Template: Will be replaced during deployment
     networks:
       - ml_network
