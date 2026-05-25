@@ -210,6 +210,37 @@ def convert_to_audio_task(file_id):
         celery_task_duration_seconds.labels(task_name='convert_to_audio_task').observe(time.time() - _metric_start)
 
 
+def _clean_for_tts(text: str) -> str:
+    """Normalize text so supertonic produces clean speech.
+
+    - Collapse newlines / carriage returns into spaces
+    - Replace em dashes, en dashes, and hyphens used as separators with periods
+    - Collapse multiple spaces / punctuation runs
+    - Ensure exactly one capital letter at the start and nothing else uppercase
+    """
+    import re
+
+    # Flatten newlines
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+    # Replace dash-like separators (em dash, en dash, hyphen surrounded by spaces) with ". "
+    text = re.sub(r'\s*[—–]\s*', '. ', text)
+    text = re.sub(r'\s+-\s+', '. ', text)
+
+    # Collapse runs of whitespace
+    text = re.sub(r' {2,}', ' ', text).strip()
+
+    # Collapse repeated punctuation / trailing punctuation before a period
+    text = re.sub(r'[.!?,;:]{2,}', '.', text)
+
+    # Lowercase everything, then capitalise the very first character
+    text = text.lower()
+    if text:
+        text = text[0].upper() + text[1:]
+
+    return text
+
+
 @app.task()
 def synthesize_sentence_task(text):
     temp_wav_file = None
@@ -218,8 +249,11 @@ def synthesize_sentence_task(text):
     _metric_start = time.time()
     _status = 'success'
     try:
+        cleaned = _clean_for_tts(text)
+        print(f"[synthesize] original: {repr(text)}")
+        print(f"[synthesize] cleaned:  {repr(cleaned)}")
         style = text_to_speech.get_voice_style("M3")
-        wav, duration = text_to_speech.synthesize(text, style, total_steps=5, speed=1.05, lang="en")
+        wav, duration = text_to_speech.synthesize(cleaned, style, total_steps=5, speed=1.05, lang="en")
         w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
         duration_secs = float(duration[0].item())
 
@@ -236,7 +270,7 @@ def synthesize_sentence_task(text):
 
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-        logger.info(f"Synthesized sentence ({len(text)} chars, {duration_secs:.2f}s)")
+        logger.info(f"Synthesized sentence (original={len(text)} chars, cleaned={len(cleaned)} chars, {duration_secs:.2f}s)")
         return {"audio_b64": audio_b64, "duration": duration_secs}
 
     except Exception:

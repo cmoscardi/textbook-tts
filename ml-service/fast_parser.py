@@ -107,6 +107,11 @@ def classify_pdf(pdf_path):
     and are not image-heavy. Returns 'complex' if any sampled page fails
     any check, or on any error.
 
+    Multi-column detection requires more than one sampled page to show
+    multi-column layout before flagging as complex, to avoid false
+    positives from cover/title pages with unusual formatting (e.g.
+    screenplays, books with centered headings).
+
     Args:
         pdf_path: Path to the PDF file
 
@@ -121,6 +126,7 @@ def classify_pdf(pdf_path):
 
     try:
         sample_indices = _pick_sample_pages(len(doc))
+        multi_column_pages = 0
 
         for page_idx in sample_indices:
             page = doc[page_idx]
@@ -138,10 +144,12 @@ def classify_pdf(pdf_path):
             page_dict = page.get_text("dict")
             text_blocks = [b for b in page_dict["blocks"] if b["type"] == 0]
 
-            # Check 2: Multi-column layout
+            # Check 2: Multi-column layout — accumulate across pages; a single
+            # outlier page (cover, title page, screenplay slug lines) should not
+            # force the whole document to the slow GPU path.
             if _is_multi_column(text_blocks, page_width):
-                logger.info(f"Triage: page {page_idx} has multi-column layout")
-                return "complex"
+                multi_column_pages += 1
+                logger.info(f"Triage: page {page_idx} has multi-column layout ({multi_column_pages} so far)")
 
             # Check 3: Math/symbol fonts
             if _has_math_fonts(text_blocks):
@@ -154,6 +162,10 @@ def classify_pdf(pdf_path):
                 if image_area / page_area > _MAX_IMAGE_RATIO:
                     logger.info(f"Triage: page {page_idx} is image-heavy ({image_area/page_area:.0%})")
                     return "complex"
+
+        if multi_column_pages > 1:
+            logger.info(f"Triage: {multi_column_pages}/{len(sample_indices)} sampled pages are multi-column")
+            return "complex"
 
         return "simple"
     except Exception as e:
