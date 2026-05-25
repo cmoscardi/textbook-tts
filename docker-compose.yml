@@ -33,7 +33,7 @@ services:
       - .env.development
     environment:
       - NVIDIA_VISIBLE_DEVICES=none
-      - TTS_ENGINE=${TTS_ENGINE:-kitten}
+      - TTS_ENGINE=${TTS_ENGINE:-supertonic}
     networks:
       - supabase_network_textbook-tts
     depends_on:
@@ -65,11 +65,11 @@ services:
   converter:
     build:
       context: ./ml-service
-      dockerfile: ${TTS_DOCKERFILE:-Dockerfile.kitten}
+      dockerfile: ${TTS_DOCKERFILE:-Dockerfile.supertonic}
     container_name: converter
     environment:
       - WORKER_TYPE=converter
-      - TTS_ENGINE=${TTS_ENGINE:-kitten}
+      - TTS_ENGINE=${TTS_ENGINE:-supertonic}
     volumes:
       - ./ml-service:/app
       - ./hf-cache:/root/.cache/huggingface

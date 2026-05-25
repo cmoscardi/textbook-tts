@@ -17,7 +17,7 @@ from worker_utils import (
     upload_audio_file,
     generate_output_file_path
 )
-from helper import load_text_to_speech, timer, sanitize_filename, load_voice_style
+from supertonic import TTS
 import soundfile as sf
 
 from pydub import AudioSegment
@@ -75,7 +75,7 @@ app.conf.update(
 register_celery_failure_handler(app)
 
 logger.info("Loading tts...")
-text_to_speech = load_text_to_speech("/supertonic/assets/onnx", use_gpu=False)
+text_to_speech = TTS(model_dir="/supertonic/assets")
 
 @app.task()
 def convert_to_audio_task(file_id):
@@ -110,9 +110,9 @@ def convert_to_audio_task(file_id):
         update_conversion_progress(conversion_id, 10, "running", supabase=supabase)
         logger.info("Loading supertonic style")
 
-        style = load_voice_style(["/supertonic/assets/voice_styles/M3.json"], verbose=True)
+        style = text_to_speech.get_voice_style("M3")
         logger.info("Running TTS...")
-        wav, duration = text_to_speech(parsed_text, "en", style, 10, 1.1)
+        wav, duration = text_to_speech.synthesize(parsed_text, style, total_steps=10, speed=1.1, lang="en")
         w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
         temp_wav_file = f"/tmp/audio_{task_id}.wav"
         logger.info(f"Saving combined audio to {temp_wav_file}")
@@ -218,8 +218,8 @@ def synthesize_sentence_task(text):
     _metric_start = time.time()
     _status = 'success'
     try:
-        style = load_voice_style(["/supertonic/assets/voice_styles/M3.json"], verbose=False)
-        wav, duration = text_to_speech(text, "en", style, 5, 1.05)
+        style = text_to_speech.get_voice_style("M3")
+        wav, duration = text_to_speech.synthesize(text, style, total_steps=5, speed=1.05, lang="en")
         w = wav[0, : int(text_to_speech.sample_rate * duration[0].item())]
         duration_secs = float(duration[0].item())
 

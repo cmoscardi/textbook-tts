@@ -8,13 +8,5 @@ RUN apt-get update && apt-get install -y \
     && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /supertonic
-RUN git clone https://github.com/cmoscardi/supertonic.git . && \
-    git checkout a9772c1
-RUN git clone https://huggingface.co/Supertone/supertonic-2 assets && \
-    cd assets && git checkout 75e6727618a02f323c720cba9478152d4bc16ca4
-WORKDIR /supertonic/py
-RUN pip install -r requirements.txt
-RUN pip install pydub watchdog supabase celery sqlalchemy psycopg2-binary pydantic python-multipart prometheus_client
-
-ENV PYTHONPATH="/supertonic/py:${PYTHONPATH}"
+RUN git clone https://huggingface.co/Supertone/supertonic-3 /supertonic/assets
+RUN pip install supertonic pydub soundfile watchdog supabase celery sqlalchemy psycopg2-binary pydantic python-multipart prometheus_client
