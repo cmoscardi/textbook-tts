@@ -423,3 +423,86 @@ def split_and_merge_sentences(text: str, min_length: int = 150) -> list[str]:
         merged[-2] += ' ' + merged[-1]
         merged.pop()
     return merged
+
+
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def extract_sentences_from_block(block_text: str, line_texts: list, line_polygons: list) -> list[dict]:
+    """Split a text block into sentences and assign per-line bounding boxes.
+
+    Builds a char→line mapping from line_texts, splits block_text into sentences,
+    then collects the deduplicated set of line polygons each sentence spans.
+
+    For callers with only block-level granularity (e.g. Datalab JSON), pass the
+    whole block text as the sole element of both line_texts and line_polygons —
+    every sentence will then receive the block polygon.
+
+    Args:
+        block_text: The block's full text (lines joined with spaces).
+        line_texts: Per-line text strings used to build the char→line mapping.
+        line_polygons: Per-line polygon coords, each [[x,y],[x,y],[x,y],[x,y]].
+
+    Returns:
+        list of {"text": str, "bbox": list[polygon]} dicts.
+    """
+    if not block_text.strip():
+        return []
+
+    # Build char→line index mapping
+    char_to_line = []
+    for i, lt in enumerate(line_texts):
+        if i > 0:
+            char_to_line.append(i)  # space separator belongs to next line
+        for _ in lt:
+            char_to_line.append(i)
+
+    # Split into sentence spans
+    sentence_spans = []
+    last_end = 0
+    for match in _SENTENCE_SPLIT_RE.finditer(block_text):
+        sentence_spans.append((last_end, match.start()))
+        last_end = match.end()
+    if last_end < len(block_text):
+        sentence_spans.append((last_end, len(block_text)))
+
+    sentences = []
+    for start, end in sentence_spans:
+        sentence_text = block_text[start:end].strip()
+        if not sentence_text:
+            continue
+        spanned = set()
+        for char_idx in range(start, min(end, len(char_to_line))):
+            spanned.add(char_to_line[char_idx])
+        seen = []
+        for li in sorted(spanned):
+            poly = line_polygons[li]
+            if poly not in seen:
+                seen.append(poly)
+        sentences.append({"text": sentence_text, "bbox": seen})
+
+    return sentences
+
+
+def merge_short_sentences_with_bbox(sentences: list[dict], min_len: int = 150) -> list[dict]:
+    """Merge consecutive short sentences, extending their bbox lists.
+
+    Args:
+        sentences: list of {"text": str, "bbox": list[polygon]} dicts.
+        min_len: sentences shorter than this (in chars) are merged into the next.
+
+    Returns:
+        Merged list of {"text": str, "bbox": list[polygon]} dicts.
+    """
+    merged = []
+    for sent in sentences:
+        if merged and len(merged[-1]["text"]) < min_len:
+            merged[-1]["text"] += " " + sent["text"]
+            merged[-1]["bbox"].extend(sent["bbox"])
+        else:
+            merged.append({"text": sent["text"], "bbox": list(sent["bbox"])})
+    if len(merged) >= 2 and len(merged[-1]["text"]) < min_len:
+        merged[-2]["text"] += " " + merged[-1]["text"]
+        merged[-2]["bbox"].extend(merged[-1]["bbox"])
+        merged.pop()
+    return merged

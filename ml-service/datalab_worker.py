@@ -1,3 +1,4 @@
+import html as html_module
 import os
 import gc
 import logging
@@ -20,6 +21,8 @@ from worker_utils import (
     create_page_sentences_bulk,
     clean_markdown_for_tts,
     split_and_merge_sentences,
+    extract_sentences_from_block,
+    merge_short_sentences_with_bbox,
 )
 
 # Configure logging
@@ -78,6 +81,64 @@ if DEV_MODE:
     logger.info("Datalab worker running in DEV MODE (no API key set, will use stub data)")
 else:
     logger.info("Datalab worker running in PRODUCTION MODE")
+
+
+_DATALAB_TEXT_BLOCK_TYPES = {
+    "Text", "SectionHeader", "ListItem", "Caption", "Footnote", "TextInlineMath"
+}
+
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+
+
+def extract_pages_from_datalab_json(json_data: dict) -> list[dict]:
+    """Extract pages and sentences with bboxes from a Datalab JSON conversion result.
+
+    The Datalab JSON (Marker format) has a hierarchy of:
+      Document → Page blocks → Text blocks (with polygon) → children
+
+    Each text block's polygon is used as the bbox for all sentences within it,
+    using extract_sentences_from_block() with block-level granularity.
+
+    Args:
+        json_data: The dict from ConversionResult.json
+
+    Returns:
+        list of {"page_number": int, "width": float, "height": float,
+                 "sentences": [{"text": str, "bbox": [polygon]}]}
+    """
+    pages = []
+    for page_idx, page_block in enumerate(json_data.get("children", [])):
+        if page_block.get("block_type") != "Page":
+            continue
+
+        # Extract page dimensions from the Page block's polygon
+        page_polygon = page_block.get("polygon", [])
+        if len(page_polygon) >= 4:
+            # Polygon is [[x0,y0],[x1,y0],[x1,y1],[x0,y1]] — TL,TR,BR,BL
+            page_width = page_polygon[2][0]
+            page_height = page_polygon[2][1]
+        else:
+            page_width, page_height = 0, 0
+
+        sentences = []
+        for block in page_block.get("children", []):
+            if block.get("block_type") not in _DATALAB_TEXT_BLOCK_TYPES:
+                continue
+            raw_html = block.get("html", "")
+            block_text = html_module.unescape(_HTML_TAG_RE.sub("", raw_html)).strip()
+            if not block_text:
+                continue
+            polygon = block.get("polygon")
+            if not polygon:
+                continue
+            sentences.extend(extract_sentences_from_block(block_text, [block_text], [polygon]))
+        pages.append({
+            "page_number": page_idx,
+            "width": page_width,
+            "height": page_height,
+            "sentences": merge_short_sentences_with_bbox(sentences),
+        })
+    return pages
 
 
 def _dev_mode_parse(file_id, parsing_id, task_id):
@@ -242,47 +303,66 @@ def parse_pdf_datalab_task(file_id):
         # Call Datalab API
         logger.info(f"Submitting PDF to Datalab API ({total_pages} pages)")
         from datalab_sdk import DatalabClient
+        from datalab_sdk.models import ConvertOptions
         client = DatalabClient(api_key=DATALAB_API_KEY)
-        result = client.convert(temp_file, paginate=True)
+        result = client.convert(temp_file, options=ConvertOptions(paginate=True, output_format="markdown,json"))
         logger.info("Datalab API returned results")
 
         update_parsing_progress(parsing_id, 70, supabase=supabase)
 
-        # Split markdown by page delimiters
         raw_markdown = result.markdown
-        # Datalab uses horizontal rules as page delimiters when paginate=True
-        page_texts = re.split(r'\n{2,}---\n{2,}', raw_markdown)
-        if not page_texts:
-            page_texts = [raw_markdown]
 
-        logger.info(f"Split into {len(page_texts)} pages")
-
-        # Store pages and sentences
+        # Store pages and sentences — use JSON output for bboxes when available
         delete_file_pages(file_id, supabase)
         global_sequence = 0
 
-        for page_num, page_text in enumerate(page_texts):
-            page_text = page_text.strip()
-            if not page_text:
-                continue
-
-            page_id = create_file_page(
-                file_id=file_id, page_number=page_num, width=0, height=0,
-                markdown_text=page_text, supabase=supabase
-            )
-
-            if page_id:
-                merged = split_and_merge_sentences(page_text)
-                if merged:
+        if result.json:
+            pages_data = extract_pages_from_datalab_json(result.json)
+            logger.info(f"Extracted {len(pages_data)} pages from Datalab JSON")
+            for pd in pages_data:
+                page_text = " ".join(s["text"] for s in pd["sentences"])
+                page_id = create_file_page(
+                    file_id=file_id, page_number=pd["page_number"],
+                    width=pd["width"], height=pd["height"],
+                    markdown_text=page_text, supabase=supabase
+                )
+                if page_id and pd["sentences"]:
                     rows = [{
                         "page_id": page_id,
                         "file_id": file_id,
-                        "text": s,
+                        "text": s["text"],
                         "sequence_number": global_sequence + i,
-                        "bbox": []
-                    } for i, s in enumerate(merged)]
+                        "bbox": s["bbox"],
+                    } for i, s in enumerate(pd["sentences"])]
                     create_page_sentences_bulk(rows, supabase)
-                    global_sequence += len(merged)
+                    global_sequence += len(pd["sentences"])
+        else:
+            # Fallback: markdown-only path (no bbox)
+            logger.warning("Datalab JSON output unavailable — falling back to markdown-only (no bboxes)")
+            page_texts = re.split(r'\n{2,}---\n{2,}', raw_markdown)
+            if not page_texts:
+                page_texts = [raw_markdown]
+            logger.info(f"Split into {len(page_texts)} pages")
+            for page_num, page_text in enumerate(page_texts):
+                page_text = page_text.strip()
+                if not page_text:
+                    continue
+                page_id = create_file_page(
+                    file_id=file_id, page_number=page_num, width=0, height=0,
+                    markdown_text=page_text, supabase=supabase
+                )
+                if page_id:
+                    sentences = split_and_merge_sentences(page_text)
+                    if sentences:
+                        rows = [{
+                            "page_id": page_id,
+                            "file_id": file_id,
+                            "text": s,
+                            "sequence_number": global_sequence + i,
+                            "bbox": []
+                        } for i, s in enumerate(sentences)]
+                        create_page_sentences_bulk(rows, supabase)
+                        global_sequence += len(sentences)
 
         update_parsing_progress(parsing_id, 85, supabase=supabase)
 
@@ -295,12 +375,11 @@ def parse_pdf_datalab_task(file_id):
                          supabase=supabase)
 
         logger.info(f"Datalab parse completed in {total_time:.2f}s "
-                     f"({len(page_texts)} pages, {global_sequence} sentences)")
+                     f"({global_sequence} sentences)")
 
         return {
             "status": "completed",
             "parsing_id": parsing_id,
-            "pages": len(page_texts),
             "sentences": global_sequence,
             "processing_time": total_time
         }

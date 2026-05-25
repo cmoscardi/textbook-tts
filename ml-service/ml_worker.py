@@ -20,6 +20,8 @@ from worker_utils import (
     finalize_parsing,
     clean_markdown_for_tts,
     split_and_merge_sentences,
+    extract_sentences_from_block,
+    merge_short_sentences_with_bbox,
 )
 
 
@@ -188,8 +190,6 @@ def extract_pages_and_sentences(document):
             ]
         }
     """
-    sentence_split = re.compile(r'(?<=[.!?])\s+')
-
     pages_data = []
 
     for page_idx, page in enumerate(document.pages):
@@ -217,68 +217,17 @@ def extract_pages_and_sentences(document):
                 line_texts.append(lt)
                 line_polygons.append(line.polygon.polygon)
 
-            # Build concatenated block text with spaces between lines,
-            # tracking which character index maps to which line
             block_text = ""
-            char_to_line = []
             for i, lt in enumerate(line_texts):
                 if i > 0:
                     block_text += " "
-                    char_to_line.append(i)  # space belongs to next line
-                for _ in lt:
-                    char_to_line.append(i)
                 block_text += lt
 
-            if not block_text.strip():
-                continue
+            page_info["sentences"].extend(
+                extract_sentences_from_block(block_text, line_texts, line_polygons)
+            )
 
-            # Split block text into sentences
-            sentence_spans = []
-            last_end = 0
-            for match in sentence_split.finditer(block_text):
-                sentence_spans.append((last_end, match.start()))
-                last_end = match.end()
-            if last_end < len(block_text):
-                sentence_spans.append((last_end, len(block_text)))
-
-            for start, end in sentence_spans:
-                sentence_text = block_text[start:end].strip()
-                if not sentence_text:
-                    continue
-
-                # Determine which lines this sentence spans
-                spanned_line_indices = set()
-                for char_idx in range(start, min(end, len(char_to_line))):
-                    spanned_line_indices.add(char_to_line[char_idx])
-
-                # Collect the polygons of those lines, deduplicating identical ones
-                # (marker sometimes returns the block-level bbox for every line)
-                seen = []
-                for li in sorted(spanned_line_indices):
-                    poly = line_polygons[li]
-                    if poly not in seen:
-                        seen.append(poly)
-                sentence_polygons = seen
-
-                page_info["sentences"].append({
-                    "text": sentence_text,
-                    "bbox": sentence_polygons
-                })
-
-        # Merge short sentences (<150 chars) with the next one
-        merged = []
-        for sent in page_info["sentences"]:
-            if merged and len(merged[-1]["text"]) < 150:
-                merged[-1]["text"] += " " + sent["text"]
-                merged[-1]["bbox"].extend(sent["bbox"])
-            else:
-                merged.append({"text": sent["text"], "bbox": list(sent["bbox"])})
-
-        # If the last entry is still short, fold it into the previous one
-        if len(merged) >= 2 and len(merged[-1]["text"]) < 150:
-            merged[-2]["text"] += " " + merged[-1]["text"]
-            merged[-2]["bbox"].extend(merged[-1]["bbox"])
-            merged.pop()
+        merged = merge_short_sentences_with_bbox(page_info["sentences"])
 
         page_info["sentences"] = merged
         pages_data.append(page_info)
