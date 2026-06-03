@@ -75,7 +75,9 @@ app.conf.update(
 register_celery_failure_handler(app)
 
 logger.info("Loading tts...")
-text_to_speech = TTS(model_dir="/supertonic/assets")
+# Pin ONNX Runtime to a single core per instance (matches the v2 setup).
+# Default is None -> ORT auto-detects and uses all physical cores.
+text_to_speech = TTS(model_dir="/supertonic/assets", intra_op_num_threads=1, inter_op_num_threads=1)
 
 @app.task()
 def convert_to_audio_task(file_id):
