@@ -61,7 +61,6 @@ serve(async (req) => {
     if (req.method === 'GET') {
       const url = new URL(req.url)
       const taskId = url.searchParams.get('task_id')
-      const sentenceId = url.searchParams.get('sentence_id')
 
       if (!taskId) {
         return new Response(
@@ -92,49 +91,14 @@ serve(async (req) => {
         )
       }
 
-      const contentType = mlResponse.headers.get('Content-Type') || ''
-
-      if (contentType.includes('audio/')) {
-        const audioBytes = await mlResponse.arrayBuffer()
-        const audioDuration = mlResponse.headers.get('X-Audio-Duration') || '0'
-
-        // Cache to Supabase storage
-        if (sentenceId) {
-          const storagePath = `${user.id}/sentences/${sentenceId}.mp3`
-          const { error: uploadError } = await supabase.storage
-            .from('files')
-            .upload(storagePath, audioBytes, {
-              contentType: 'audio/mpeg',
-              upsert: true,
-            })
-
-          if (!uploadError) {
-            await supabase
-              .from('page_sentences')
-              .update({ audio_path: storagePath })
-              .eq('sentence_id', sentenceId)
-          } else {
-            console.error('Failed to cache audio:', uploadError)
-          }
-        }
-
-        return new Response(audioBytes, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'audio/mpeg',
-            'X-Audio-Duration': audioDuration,
-          }
-        })
-      } else {
-        // Still processing — proxy JSON status
-        const body = await mlResponse.text()
-        return new Response(body, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          }
-        })
-      }
+      // ML now always returns JSON. The worker uploaded the MP3 to storage and
+      // recorded page_sentences.audio_path, so we just hand back the path — the
+      // frontend's own (public-facing) Supabase client downloads it under RLS.
+      const result = await mlResponse.json()
+      return new Response(
+        JSON.stringify(result),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
     }
 
     // POST — submit synthesis request (or serve from cache)
@@ -179,7 +143,7 @@ serve(async (req) => {
       )
     }
 
-    // Check cache: if sentence already has audio in storage, serve it directly
+    // Check cache: if sentence already has audio in storage, return a signed URL
     if (sentence_id) {
       const { data: sentenceData } = await supabase
         .from('page_sentences')
@@ -188,32 +152,22 @@ serve(async (req) => {
         .single()
 
       if (sentenceData?.audio_path) {
-        const { data: audioData, error: downloadError } = await supabase.storage
-          .from('files')
-          .download(sentenceData.audio_path)
-
-        if (!downloadError && audioData) {
-          const arrayBuffer = await audioData.arrayBuffer()
-          return new Response(arrayBuffer, {
-            headers: {
-              ...corsHeaders,
-              'Content-Type': 'audio/mpeg',
-            }
-          })
-        }
-        // If download failed, fall through to re-synthesize
-        console.error('Cache download failed, re-synthesizing:', downloadError)
+        return new Response(
+          JSON.stringify({ audio_path: sentenceData.audio_path }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
       }
     }
 
-    // Cache miss — submit synthesis task to ML service
+    // Cache miss — submit synthesis task to ML service. The worker uploads the
+    // result to storage; we pass the ids it needs to build the storage path.
     const mlResponse = await fetch(`${mlServiceHost}/synthesize`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'ML-Auth-Key': mlServiceAuthKey,
       },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, sentence_id, user_id: user.id })
     })
 
     if (!mlResponse.ok) {

@@ -1,7 +1,6 @@
 import os
 import gc
 import logging
-import base64
 from celery import Celery
 import time
 import re
@@ -20,7 +19,8 @@ from worker_utils import (
     update_conversion_progress,
     finalize_conversion,
     upload_audio_file,
-    generate_output_file_path
+    generate_output_file_path,
+    set_sentence_audio_path
 )
 
 # Configure logging
@@ -263,7 +263,7 @@ def convert_to_audio_task(file_id):
 
 
 @app.task()
-def synthesize_sentence_task(text):
+def synthesize_sentence_task(text, sentence_id=None, user_id=None):
     temp_wav_file = None
     temp_mp3_file = None
     task_id = synthesize_sentence_task.request.id
@@ -284,10 +284,14 @@ def synthesize_sentence_task(text):
         with open(temp_mp3_file, "rb") as f:
             audio_bytes = f.read()
 
-        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        # Upload to storage and return only the path — the audio blob never
+        # touches the Celery result backend (Postgres).
+        audio_path = f"{user_id}/sentences/{sentence_id}.mp3"
+        upload_audio_file(audio_path, audio_bytes, user_id, supabase=supabase)
+        set_sentence_audio_path(sentence_id, audio_path, supabase=supabase)
 
-        logger.info(f"Synthesized sentence ({len(text)} chars, {duration_secs:.2f}s)")
-        return {"audio_b64": audio_b64, "duration": duration_secs}
+        logger.info(f"Synthesized sentence ({len(text)} chars, {duration_secs:.2f}s) -> {audio_path}")
+        return {"audio_path": audio_path, "duration": duration_secs}
 
     except Exception:
         _status = 'failed'

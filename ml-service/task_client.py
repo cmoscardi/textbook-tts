@@ -86,11 +86,13 @@ def send_convert_task(file_id: str):
         queue='convert_queue'
     )
 
-def send_synthesize_task(text: str):
+def send_synthesize_task(text: str, sentence_id: str = None, user_id: str = None):
     """Send sentence synthesis task to converter worker
 
     Args:
         text: The sentence text to synthesize
+        sentence_id: UUID of the page_sentences row (used for the storage path)
+        user_id: UUID of the file owner (used for the storage path)
 
     Returns:
         AsyncResult: Celery task result object with .id and other methods
@@ -98,7 +100,7 @@ def send_synthesize_task(text: str):
     logger.info(f"Sending synthesize task ({len(text)} chars)")
     return client_app.send_task(
         SYNTHESIZE_SENTENCE_TASK,
-        args=[text],
+        args=[text, sentence_id, user_id],
         queue='synthesize_queue'
     )
 

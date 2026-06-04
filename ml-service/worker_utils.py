@@ -341,6 +341,19 @@ def upload_audio_file(file_path: str, file_data: bytes, user_id: str, content_ty
         return None
 
 
+def set_sentence_audio_path(sentence_id: str, audio_path: str, supabase=None):
+    """Record the storage path of a synthesized sentence on page_sentences."""
+    if not supabase or not sentence_id:
+        return False
+
+    try:
+        supabase.table("page_sentences").update({"audio_path": audio_path}).eq("sentence_id", sentence_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set sentence audio_path for {sentence_id}: {e}")
+        return False
+
+
 def generate_output_file_path(user_id: str, original_filename: str) -> str:
     """Generate a unique output file path for the converted audio"""
     import uuid

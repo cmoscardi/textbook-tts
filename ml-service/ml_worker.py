@@ -599,10 +599,13 @@ def schedule_presynthesis(file_id):
     """Pre-synthesize first 5 sentences (fire-and-forget to warm TTS model)."""
     try:
         from task_client import send_synthesize_task
-        sentences = supabase.table('page_sentences').select('text') \
+        file_row = supabase.table('files').select('user_id') \
+            .eq('file_id', file_id).single().execute()
+        user_id = file_row.data['user_id'] if file_row.data else None
+        sentences = supabase.table('page_sentences').select('sentence_id, text') \
             .eq('file_id', file_id).order('sequence_number').limit(5).execute()
         for s in (sentences.data or []):
-            send_synthesize_task(s['text'])
+            send_synthesize_task(s['text'], s['sentence_id'], user_id)
     except Exception as e:
         logger.warning(f"Pre-synthesis scheduling failed (non-fatal): {e}")
 

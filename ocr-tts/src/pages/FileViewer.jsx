@@ -388,7 +388,19 @@ export default function FileViewer() {
       'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
     };
 
-    // Step 1: Submit (returns cached audio directly on cache hit)
+    // Download the stored MP3 (RLS-protected, owned by this user) into a local
+    // object URL we can replay instantly.
+    const cacheFromPath = async (audioPath) => {
+      const { data: blob, error } = await supabase.storage
+        .from('files')
+        .download(audioPath);
+      if (error || !blob) throw new Error(`Audio download failed: ${error?.message}`);
+      const blobUrl = URL.createObjectURL(blob);
+      sentenceAudioCache.current.set(idx, blobUrl);
+      return blobUrl;
+    };
+
+    // Step 1: Submit (returns an audio_path directly on cache hit)
     const submitRes = await fetch(`${supabaseUrl}/functions/v1/play-sentence`, {
       method: 'POST',
       headers,
@@ -400,30 +412,26 @@ export default function FileViewer() {
     });
     if (!submitRes.ok) throw new Error(`Submit failed: ${await submitRes.text()}`);
 
-    // Cache hit — audio returned directly
-    if (submitRes.headers.get('content-type')?.includes('audio/')) {
-      const blob = await submitRes.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      sentenceAudioCache.current.set(idx, blobUrl);
-      return blobUrl;
+    const submitData = await submitRes.json();
+
+    // Cache hit — audio_path returned directly
+    if (submitData.audio_path) {
+      return cacheFromPath(submitData.audio_path);
     }
 
-    const { task_id } = await submitRes.json();
+    const { task_id } = submitData;
 
     // Step 2: Poll for result
-    const sentenceId = sentences[idx].sentence_id;
     for (let attempt = 0; attempt < 60; attempt++) {
       const pollRes = await fetch(
-        `${supabaseUrl}/functions/v1/play-sentence?task_id=${task_id}&sentence_id=${sentenceId}`,
+        `${supabaseUrl}/functions/v1/play-sentence?task_id=${task_id}`,
         { headers }
       );
       if (!pollRes.ok) throw new Error(`Poll failed: ${await pollRes.text()}`);
 
-      if (pollRes.headers.get('content-type')?.includes('audio/')) {
-        const blob = await pollRes.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        sentenceAudioCache.current.set(idx, blobUrl);
-        return blobUrl;
+      const pollData = await pollRes.json();
+      if (pollData.audio_path) {
+        return cacheFromPath(pollData.audio_path);
       }
       // Still processing — wait 500ms
       await new Promise(r => setTimeout(r, 500));

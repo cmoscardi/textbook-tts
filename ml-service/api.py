@@ -3,11 +3,10 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from uuid import UUID
-import base64
 import logging
 import time
 import os
-from typing import Annotated
+from typing import Annotated, Optional
 
 import tempfile
 import requests as http_requests
@@ -175,6 +174,8 @@ class ConvertRequest(BaseModel):
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(description="The sentence text to synthesize", max_length=2000)
+    sentence_id: Optional[str] = Field(default=None, description="page_sentences row UUID (storage path)")
+    user_id: Optional[str] = Field(default=None, description="File owner UUID (storage path)")
 
 
 class IngestEmailRequest(BaseModel):
@@ -291,7 +292,7 @@ def convert(request: ConvertRequest, auth: RequireAuth):
 @app.post("/synthesize")
 def synthesize(request: SynthesizeRequest, auth: RequireAuth):
     logger.info(f"Received synthesize request ({len(request.text)} chars)")
-    fut = send_synthesize_task(request.text)
+    fut = send_synthesize_task(request.text, request.sentence_id, request.user_id)
     logger.info(f"Created synthesize task with ID: {fut.id}")
     return {"task_id": fut.id}
 
@@ -304,13 +305,13 @@ def get_synthesis(task_id: str, auth: RequireAuth):
     if result.state in ('PENDING', 'STARTED', 'RETRY'):
         return {"status": "processing"}
     elif result.state == 'SUCCESS':
-        audio_bytes = base64.b64decode(result.result["audio_b64"])
-        duration = result.result.get("duration", 0)
-        return Response(
-            content=audio_bytes,
-            media_type="audio/mpeg",
-            headers={"X-Audio-Duration": str(duration)},
-        )
+        # The worker uploads the MP3 to storage and returns only its path, so no
+        # audio bytes pass through the Celery result backend or this endpoint.
+        return {
+            "status": "completed",
+            "audio_path": result.result["audio_path"],
+            "duration": result.result.get("duration", 0),
+        }
     else:  # FAILURE or REVOKED
         raise HTTPException(status_code=500, detail="Synthesis failed")
 
