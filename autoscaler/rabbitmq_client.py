@@ -4,17 +4,25 @@ import logging
 
 import requests
 
-from config import RABBITMQ_MGMT_URL, RABBITMQ_MGMT_USER, RABBITMQ_MGMT_PASS, SCALABLE_QUEUES
+from config import RABBITMQ_MGMT_URL, RABBITMQ_MGMT_USER, RABBITMQ_MGMT_PASS, SCALABLE_WORKERS
 
 logger = logging.getLogger(__name__)
+
+
+def _monitored_queues():
+    """Flatten every queue served by any scalable worker group."""
+    queues = set()
+    for group in SCALABLE_WORKERS.values():
+        queues.update(group["queues"].keys())
+    return queues
 
 
 def get_queue_depths():
     """Get message counts for all scalable queues.
 
     Returns:
-        dict: {queue_name: messages_ready} for queues in SCALABLE_QUEUES.
-              Returns 0 for queues that don't exist yet in RabbitMQ.
+        dict: {queue_name: messages_ready} for every queue served by a worker in
+              SCALABLE_WORKERS. Returns 0 for queues that don't exist yet in RabbitMQ.
     """
     try:
         resp = requests.get(
@@ -31,7 +39,7 @@ def get_queue_depths():
         logger.error(f"Failed to fetch queue depths: {e}")
         raise
 
-    depth_map = {name: 0 for name in SCALABLE_QUEUES}
+    depth_map = {name: 0 for name in _monitored_queues()}
     for q in queues:
         name = q.get("name")
         if name in depth_map:

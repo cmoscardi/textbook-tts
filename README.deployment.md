@@ -424,19 +424,45 @@ For issues or questions:
 
 The autoscaler daemon monitors RabbitMQ queue depths and creates/destroys DigitalOcean droplets to scale CPU workers on demand. GPU parsing (`parse_queue`) always stays local. The three scalable worker types are:
 
-| Queue | Worker | Droplet size | Max droplets |
-|-------|--------|-------------|-------------|
-| `fast_parse_queue` | fast-parser | s-1vcpu-1gb ($6/mo) | 3 |
-| `datalab_parse_queue` | datalab-parser | s-1vcpu-1gb ($6/mo) | 3 |
-| `convert_queue` | converter (TTS) | s-2vcpu-2gb ($12/mo) | 3 |
+| Worker | Queue(s) drained | Droplet size | Max droplets |
+|--------|------------------|-------------|-------------|
+| fast-parser | `fast_parse_queue` | s-1vcpu-1gb ($6/mo) | 3 |
+| datalab-parser | `datalab_parse_queue` | s-1vcpu-1gb ($6/mo) | 3 |
+| converter (TTS) | `convert_queue` **and** `synthesize_queue` | s-2vcpu-2gb ($12/mo) | 3 |
 
-The autoscaler runs as a separate Docker container outside the main compose stack, since it needs access to the DO API and manages its own state.
+**Scaling model (one unit per worker type, not per queue).** A worker type can serve more than one queue — the converter consumes both `convert_queue` (whole-file conversion) and `synthesize_queue` (high-volume per-sentence TTS), exactly as `run-converter.prod.sh` does locally. The autoscaler config (`autoscaler/config.py` → `SCALABLE_WORKERS`) is keyed by worker type, with a `queues` map per worker. Scaling decisions use the **combined ready-message depth across all of a worker's queues**, and drain-time is weighted by each queue's average task duration. A converter droplet is only scaled **down** once **all** of its queues (`convert_queue` *and* `synthesize_queue`) have been empty for `scale_down_idle_s`.
+
+> Note: `synthesize_queue` is the high-volume path (per-sentence TTS via `/synthesize` and the pre-synthesize warm-up). It must be covered by the converter worker group — if it isn't in `SCALABLE_WORKERS`, a synthesize backlog will never trigger scaling even though the queue is deep.
+
+The autoscaler runs as the `autoscaler` service in `docker-compose.prod.yml` (started automatically by `deploy/deploy.sh`). It joins `ml_network`, reads the DO API, and persists state to the `autoscaler_state` volume.
 
 ### Prerequisites
 
-- DigitalOcean account and API token
+- DigitalOcean account and API token (see **required token scopes** below)
 - `doctl` CLI installed locally for baking snapshots (`brew install doctl` / `snap install doctl`)
 - SSH key added to your DO account (optional — only needed for debugging into droplets)
+
+#### Required DO API token scopes
+
+If you use a **fine-grained** (scoped) DigitalOcean token rather than a full-access one, it **must** include all of these scopes, or scaling will fail:
+
+| Scope | Why |
+|-------|-----|
+| `droplet:create` | Create worker droplets on scale-up |
+| `droplet:read` | List/reconcile managed droplets |
+| `droplet:delete` | Destroy droplets on scale-down |
+| `tag:create` | Apply the `autoscaler-managed` / `worker-type:…` tags at creation time |
+| `tag:read` | Read those tags during reconcile |
+| `ssh_key:read` | Resolve `DO_SSH_KEY_FINGERPRINT` when injecting the SSH key |
+
+**The most common gotcha is a missing `tag:create` scope.** GET/list calls succeed (they only need `droplet:read`), so the autoscaler starts cleanly and detects backlogs — but every `POST /v2/droplets` is rejected:
+
+```
+ERROR - Failed to scale up converter: 403 Client Error: Forbidden for url: https://api.digitalocean.com/v2/droplets
+# DO body: {"message":"You are missing the required permission tag:create."}
+```
+
+The tags are **not** optional — `list_managed_droplets`/reconcile filter on the `autoscaler-managed` tag to track and clean up droplets, so dropping the tags would leak droplets and cost. Fix the token scope, not the code. After regenerating the token, update `DIGITALOCEAN_API_TOKEN` in `.env.production` and recreate the container (see [Running the Autoscaler](#running-the-autoscaler)).
 
 ### Environment Variables
 
@@ -452,77 +478,68 @@ AUTOSCALER_MONTHLY_COST_CAP=50         # hard spend cap in USD
 
 ### Expose RabbitMQ for DO Droplets
 
-DO droplets connect to RabbitMQ over the internet. Two things needed:
+DO droplets connect to RabbitMQ over the internet. Both pieces are already handled by the deploy setup:
 
-**1. Expose port 5672** in `docker-compose.prod.yml` under the `rabbitmq` service — uncomment this line:
-
-```yaml
-# - "${MAIN_HOST_TUN0}:5672:5672"   # Bind AMQP to tun0 only (accessible from remote host)
-```
-
-Or bind to all interfaces if you don't have a dedicated interface:
+**1. Port 5672 is exposed** in `docker-compose.prod.yml` under the `rabbitmq` service:
 
 ```yaml
-- "0.0.0.0:5672:5672"
+- "0.0.0.0:5672:5672"     # AMQP — secured by auth + firewall (for DO autoscaler droplets)
 ```
 
-**2. Open the port in ufw:**
+**2. `deploy/deploy.sh` opens the port in ufw automatically:**
 
 ```bash
 sudo ufw allow 5672/tcp comment "RabbitMQ AMQP - DO autoscaler droplets"
 ```
 
-Port 5672 is secured by `RABBITMQ_USER`/`RABBITMQ_PASS` credentials — droplets that don't have the credentials can't authenticate.
+(The deploy script runs this for you; run it manually only if you skip the script.) Port 5672 is secured by `RABBITMQ_USER`/`RABBITMQ_PASS` credentials — droplets without the credentials can't authenticate. The RabbitMQ **management** UI (15672) stays bound to localhost and is never exposed.
 
-### Bake Worker Snapshots (One-time Setup)
+### Bake Worker Snapshots (handled automatically by deploy.sh)
 
-The autoscaler boots droplets from a pre-baked snapshot that already has Docker and the worker images installed. Build it with:
+The autoscaler boots droplets from a pre-baked snapshot that already has Docker and the worker images installed. **You normally don't run anything by hand** — `deploy/deploy.sh` does it for you:
+
+1. It hashes the worker Dockerfiles + Python source. If that hash changed since the last bake (or if `DO_CONVERTER_SNAPSHOT_ID` is unset), it runs `./autoscaler/snapshot_bake.sh` (~10 min).
+2. The bake resolves the new snapshot's real ID, writes it to `.last-snapshot-id`, and prunes older `autoscaler-workers-*` snapshots.
+3. `deploy.sh` wires that ID into all three `DO_*_SNAPSHOT_ID` vars in `.env.production`.
+4. The autoscaler is started **last**, so it boots with the freshly-baked snapshot ID — no second deploy run and no manual restart needed.
+
+> All three worker types share one snapshot; the `WORKER_TYPE` env var (via cloud-init) selects which image runs at boot.
+
+**Running the bake standalone** (advanced/debug — e.g. to re-bake without a full deploy):
 
 ```bash
-# Source env so the script has DO credentials
-source .env.production
-./autoscaler/snapshot_bake.sh
+source .env.production            # so the script has DO credentials
+./autoscaler/snapshot_bake.sh     # prints the snapshot ID and writes .last-snapshot-id
 ```
 
-This takes ~10 minutes. When done it prints a snapshot name — get its ID and update `.env.production`:
-
-```bash
-doctl compute snapshot list --format ID,Name | grep autoscaler-workers
-# Then set in .env.production:
-DO_FAST_PARSER_SNAPSHOT_ID=123456789
-DO_DATALAB_PARSER_SNAPSHOT_ID=123456789   # same snapshot for all three
-DO_CONVERTER_SNAPSHOT_ID=123456789        # WORKER_TYPE env var selects the image at boot
-```
-
-Re-run `snapshot_bake.sh` whenever worker Dockerfiles or Python source changes.
+Run standalone, the script does **not** edit `.env.production` (only `deploy.sh` does). To pick up the new image, either re-run `./deploy/deploy.sh` or copy the printed ID into the three `DO_*_SNAPSHOT_ID` vars yourself.
 
 ### Running the Autoscaler
 
-Build and start the autoscaler container (runs outside the main compose stack, but joins the same network):
+The autoscaler is part of the main compose stack and is started automatically by `deploy/deploy.sh` (only if `DIGITALOCEAN_API_TOKEN` and `MAIN_HOST_IP` are set). To build and (re)start it on its own — e.g. after a config or token change:
 
 ```bash
-docker build -t autoscaler autoscaler/
-docker run -d \
-  --name autoscaler-prod \
-  --restart unless-stopped \
-  --env-file .env.production \
-  -e RABBITMQ_MGMT_URL=http://rabbitmq-prod:15672 \
-  --network ml_network \
-  -v autoscaler_state:/var/lib/autoscaler \
-  autoscaler
+docker compose -f docker-compose.prod.yml build autoscaler
+docker compose -f docker-compose.prod.yml up -d --force-recreate autoscaler
 ```
 
-The autoscaler will log scale-up/down events and errors:
+View scale-up/down events and errors:
 
 ```bash
-docker logs -f autoscaler-prod
+docker compose -f docker-compose.prod.yml logs -f autoscaler
 ```
 
-To restart after a config change:
+Confirm it's watching every scalable queue (you should see `synthesize_queue` in the depths line):
 
-```bash
-docker rm -f autoscaler-prod
-# re-run docker run ... above
+```
+DEBUG - Queue depths: {'fast_parse_queue': 0, 'datalab_parse_queue': 0, 'convert_queue': 0, 'synthesize_queue': 0}
+```
+
+A healthy scale-up looks like:
+
+```
+INFO - do_client - Creating droplet autoscaler-converter-<id> (size=s-2vcpu-2gb, region=nyc3)
+INFO - SCALE UP: created autoscaler-converter-<id> for converter (depth=39)
 ```
 
 ### Monitoring
@@ -545,9 +562,26 @@ Email alerts fire on scale events, capacity warnings (queue still deep at max dr
 
 ### Troubleshooting
 
+**Scale-up fails with `403 ... tag:create` (most common):**
+```
+ERROR - Failed to scale up converter: 403 Client Error: Forbidden for url: .../v2/droplets
+# body: {"message":"You are missing the required permission tag:create."}
+```
+The DO token is missing a scope — almost always `tag:create`. See [Required DO API token scopes](#required-do-api-token-scopes). To read the real error body (which the autoscaler hides), probe with an intentionally-invalid image so no droplet is actually created:
+```bash
+docker compose -f docker-compose.prod.yml exec autoscaler python -c '
+import requests, config
+h={"Authorization":f"Bearer {config.DO_API_TOKEN}"}
+p={"name":"probe","region":"nyc3","size":"s-2vcpu-2gb","image":99999999,"tags":[config.MANAGED_TAG]}
+r=requests.post("https://api.digitalocean.com/v2/droplets",json=p,headers=h,timeout=15)
+print(r.status_code, r.text)'
+```
+
+**A deep queue never triggers scaling:** confirm the queue is actually covered by a worker group in `autoscaler/config.py` (`SCALABLE_WORKERS`). If `synthesize_queue` (or any queue) isn't listed under a worker's `queues`, the autoscaler is blind to it. Check the live depths line in the logs — every monitored queue appears there.
+
 **Autoscaler can't reach RabbitMQ management API:**
 ```bash
-docker exec autoscaler-prod curl -s http://rabbitmq-prod:15672/api/healthchecks/node
+docker compose -f docker-compose.prod.yml exec autoscaler curl -s http://rabbitmq-prod:15672/api/healthchecks/node
 # If that fails, check autoscaler is on ml_network: docker inspect autoscaler-prod
 ```
 
@@ -570,8 +604,9 @@ docker logs worker                   # worker container logs
 
 **Orphaned droplets after autoscaler crash:**
 ```bash
-docker rm -f autoscaler-prod
-# re-run docker run ... — autoscaler reconciles state with DO API on startup
+docker compose -f docker-compose.prod.yml up -d --force-recreate autoscaler
+# autoscaler reconciles state against the DO API on startup: it re-adopts droplets
+# tagged worker-type:… and drops state entries for droplets that no longer exist
 ```
 
 ---

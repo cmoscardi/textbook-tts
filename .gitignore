@@ -45,3 +45,4 @@ supabase/.branches
 loadtest/loadtest-result.json
 supabase/.temp
 .last-snapshot-hash
+.last-snapshot-id

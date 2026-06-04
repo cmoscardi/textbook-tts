@@ -22,7 +22,7 @@ import rabbitmq_client
 import alerts
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("autoscaler")
@@ -98,9 +98,9 @@ def _estimate_monthly_cost(state):
     # Sum hourly costs of currently active droplets since last check
     total = 0.0
     for droplet_id, info in state.get("droplets", {}).items():
-        queue = info.get("queue", "")
-        q_config = config.SCALABLE_QUEUES.get(queue, {})
-        hourly = q_config.get("hourly_cost", 0.01)
+        worker_type = info.get("worker_type", "")
+        w_config = config.SCALABLE_WORKERS.get(worker_type, {})
+        hourly = w_config.get("hourly_cost", 0.01)
         created = _parse_iso(info["created_at"])
         hours_alive = (_now() - created).total_seconds() / 3600
         total += hours_alive * hourly
@@ -130,25 +130,21 @@ def _reconcile(state):
         info = state["droplets"].pop(did)
         created = _parse_iso(info["created_at"])
         hours = (_now() - created).total_seconds() / 3600
-        q_config = config.SCALABLE_QUEUES.get(info.get("queue", ""), {})
-        state["monthly_hours"] += hours * q_config.get("hourly_cost", 0.01)
+        w_config = config.SCALABLE_WORKERS.get(info.get("worker_type", ""), {})
+        state["monthly_hours"] += hours * w_config.get("hourly_cost", 0.01)
 
     # Adopt droplets on DO that aren't in our state (e.g. created before crash)
     for d in actual:
         if str(d.id) not in state.get("droplets", {}):
-            # Try to figure out the queue from tags
-            queue = ""
+            # Identify the worker group from tags (worker_type is the grouping key)
             worker_type = ""
             for tag in d.tags:
-                if tag.startswith("queue:"):
-                    queue = tag.split(":", 1)[1]
                 if tag.startswith("worker-type:"):
                     worker_type = tag.split(":", 1)[1]
             logger.warning(f"Reconcile: adopting orphaned droplet {d.name} ({d.id})")
             state.setdefault("droplets", {})[str(d.id)] = {
                 "name": d.name,
                 "worker_type": worker_type,
-                "queue": queue,
                 "created_at": _iso(_now()),  # approximate
             }
 
@@ -157,8 +153,12 @@ def _reconcile(state):
 # Cloud-init generation
 # ---------------------------------------------------------------------------
 
-def _make_user_data(worker_type):
-    """Generate cloud-init user data for a droplet."""
+def _make_user_data(worker_type, converter_workers=5):
+    """Generate cloud-init user data for a droplet.
+
+    converter_workers sets how many solo TTS worker processes the converter droplet runs
+    (ignored by non-converter workers); sourced from the worker's remote_concurrency.
+    """
     return f"""#!/bin/bash
 # Written by autoscaler cloud-init
 cat >> /etc/environment <<'ENVEOF'
@@ -170,7 +170,7 @@ SUPABASE_URL={config.SUPABASE_URL}
 SUPABASE_SERVICE_ROLE_KEY={config.SUPABASE_SERVICE_ROLE_KEY}
 DATALAB_API_KEY={config.DATALAB_API_KEY}
 TTS_ENGINE={config.TTS_ENGINE}
-CONVERTER_WORKERS=5
+CONVERTER_WORKERS={converter_workers}
 WORKER_TYPE={worker_type}
 ENVEOF
 
@@ -184,10 +184,10 @@ set -a; source /etc/environment; set +a
 # Scaling decisions
 # ---------------------------------------------------------------------------
 
-def _count_droplets_for_queue(state, queue_name):
+def _count_droplets_for_worker(state, worker_type):
     return sum(
         1 for info in state.get("droplets", {}).values()
-        if info.get("queue") == queue_name
+        if info.get("worker_type") == worker_type
     )
 
 
@@ -195,8 +195,8 @@ def _total_droplet_count(state):
     return len(state.get("droplets", {}))
 
 
-def _cooldown_elapsed(state, queue_name, cooldown_s):
-    last = state.get("last_scale_up", {}).get(queue_name)
+def _cooldown_elapsed(state, worker_type, cooldown_s):
+    last = state.get("last_scale_up", {}).get(worker_type)
     if not last:
         return True
     elapsed = (_now() - _parse_iso(last)).total_seconds()
@@ -218,51 +218,56 @@ def evaluate_and_act(state, queue_depths):
             alerts.alert_cost_warning(monthly_cost, config.MONTHLY_COST_CAP_USD)
         logger.warning(f"Monthly cost ${monthly_cost:.2f} >= cap ${config.MONTHLY_COST_CAP_USD}, no scale-ups")
 
-    for queue_name, q_config in config.SCALABLE_QUEUES.items():
-        depth = queue_depths.get(queue_name, 0)
-        num_droplets = _count_droplets_for_queue(state, queue_name)
-        worker_type = q_config["worker_type"]
+    for worker_type, w_config in config.SCALABLE_WORKERS.items():
+        queues = w_config["queues"]
+        # Combined backlog across every queue this worker serves.
+        combined_depth = sum(queue_depths.get(q, 0) for q in queues)
+        # Work-seconds weighted by each queue's avg task duration (heterogeneous tasks).
+        total_work_s = sum(
+            queue_depths.get(q, 0) * qc["task_duration_avg_s"]
+            for q, qc in queues.items()
+        )
+        num_droplets = _count_droplets_for_worker(state, worker_type)
+        # Representative queue used for tagging / alert context.
+        primary_queue = next(iter(queues))
 
         if _HAS_PROMETHEUS:
             active_droplets_gauge.labels(worker_type=worker_type).set(num_droplets)
 
         # --- Scale UP ---
         total_concurrency = (
-            q_config["local_concurrency"]
-            + num_droplets * q_config["remote_concurrency"]
+            w_config["local_concurrency"]
+            + num_droplets * w_config["remote_concurrency"]
         )
-        time_to_drain = (
-            depth * q_config["task_duration_avg_s"] / max(total_concurrency, 1)
-        )
+        time_to_drain = total_work_s / max(total_concurrency, 1)
 
         if (
-            depth > q_config["scale_up_threshold"]
+            combined_depth > w_config["scale_up_threshold"]
             and time_to_drain > 5
-            and num_droplets < q_config["max_droplets"]
+            and num_droplets < w_config["max_droplets"]
             and _total_droplet_count(state) < config.GLOBAL_MAX_DROPLETS
-            and _cooldown_elapsed(state, queue_name, q_config["cooldown_s"])
+            and _cooldown_elapsed(state, worker_type, w_config["cooldown_s"])
             and monthly_cost < config.MONTHLY_COST_CAP_USD
-            and q_config["snapshot_id"]
+            and w_config["snapshot_id"]
         ):
             try:
                 droplet = do_client.create_droplet(
                     worker_type=worker_type,
-                    queue_name=queue_name,
-                    snapshot_id=q_config["snapshot_id"],
-                    size=q_config["droplet_size"],
-                    user_data=_make_user_data(worker_type),
+                    queue_name=primary_queue,
+                    snapshot_id=w_config["snapshot_id"],
+                    size=w_config["droplet_size"],
+                    user_data=_make_user_data(worker_type, w_config["remote_concurrency"]),
                 )
                 state.setdefault("droplets", {})[str(droplet.id)] = {
                     "name": droplet.name,
                     "worker_type": worker_type,
-                    "queue": queue_name,
                     "created_at": _iso(_now()),
                 }
-                state.setdefault("last_scale_up", {})[queue_name] = _iso(_now())
+                state.setdefault("last_scale_up", {})[worker_type] = _iso(_now())
                 _save_state(state)
 
-                logger.info(f"SCALE UP: created {droplet.name} for {queue_name} (depth={depth})")
-                alerts.alert_scale_up(droplet.name, queue_name, depth)
+                logger.info(f"SCALE UP: created {droplet.name} for {worker_type} (depth={combined_depth})")
+                alerts.alert_scale_up(droplet.name, worker_type, combined_depth)
 
                 if _HAS_PROMETHEUS:
                     scale_events_counter.labels(action="up", worker_type=worker_type).inc()
@@ -271,19 +276,19 @@ def evaluate_and_act(state, queue_depths):
                 logger.error(f"Failed to scale up {worker_type}: {e}")
                 alerts.alert_error(f"Failed to create {worker_type} droplet: {e}")
 
-        # Capacity warning: at max droplets and queue still deep
+        # Capacity warning: at max droplets and backlog still deep
         elif (
-            depth > q_config["scale_up_threshold"] * 2
-            and num_droplets >= q_config["max_droplets"]
+            combined_depth > w_config["scale_up_threshold"] * 2
+            and num_droplets >= w_config["max_droplets"]
         ):
             alerts.alert_capacity_warning(
-                queue_name, depth, q_config["max_droplets"], num_droplets
+                worker_type, combined_depth, w_config["max_droplets"], num_droplets
             )
 
-        # --- Scale DOWN ---
-        if depth == 0 and num_droplets > 0:
+        # --- Scale DOWN --- (only when ALL of the worker's queues are empty)
+        if combined_depth == 0 and num_droplets > 0:
             for droplet_id, info in list(state.get("droplets", {}).items()):
-                if info.get("queue") != queue_name:
+                if info.get("worker_type") != worker_type:
                     continue
                 created = _parse_iso(info["created_at"])
                 idle_seconds = (_now() - created).total_seconds()
@@ -293,25 +298,25 @@ def evaluate_and_act(state, queue_depths):
                 if last_nonempty:
                     idle_seconds = (_now() - _parse_iso(last_nonempty)).total_seconds()
 
-                if idle_seconds >= q_config["scale_down_idle_s"]:
+                if idle_seconds >= w_config["scale_down_idle_s"]:
                     success = do_client.destroy_droplet(int(droplet_id))
                     if success:
                         # Credit hours
                         hours = (_now() - created).total_seconds() / 3600
-                        state["monthly_hours"] += hours * q_config.get("hourly_cost", 0.01)
+                        state["monthly_hours"] += hours * w_config.get("hourly_cost", 0.01)
                         del state["droplets"][droplet_id]
                         _save_state(state)
 
                         logger.info(f"SCALE DOWN: destroyed {info['name']} (idle {idle_seconds:.0f}s)")
-                        alerts.alert_scale_down(info["name"], queue_name, idle_seconds)
+                        alerts.alert_scale_down(info["name"], worker_type, idle_seconds)
 
                         if _HAS_PROMETHEUS:
                             scale_events_counter.labels(action="down", worker_type=worker_type).inc()
 
-        # Track when queue was last non-empty (for idle detection)
-        if depth > 0:
+        # Track when this worker's queues were last non-empty (for idle detection)
+        if combined_depth > 0:
             for droplet_id, info in state.get("droplets", {}).items():
-                if info.get("queue") == queue_name:
+                if info.get("worker_type") == worker_type:
                     info["last_queue_nonempty_at"] = _iso(_now())
 
 

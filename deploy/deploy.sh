@@ -52,6 +52,16 @@ COMPOSE_FILE="docker-compose.prod.yml"
 REMOTE_COMPOSE_FILE="docker-compose.remote.yml"
 ENV_FILE=".env.production"
 
+# Idempotently set KEY=VAL in an env file (replace existing line, else append).
+set_env_var() {
+    local key="$1" val="$2" file="$3"
+    if grep -qE "^${key}=" "$file"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+    else
+        printf '%s=%s\n' "$key" "$val" >> "$file"
+    fi
+}
+
 # Check if running on the server
 if [ ! -f "$ENV_FILE" ]; then
     echo -e "${RED}Error: $ENV_FILE not found!${NC}"
@@ -116,7 +126,19 @@ else
 fi
 
 echo -e "${GREEN}Step 4: Running Supabase database migrations...${NC}"
-npx supabase db push --db-url "$DATABASE_URL" --password "$POSTGRES_PASSWORD" || {
+# Migrations MUST NOT use the transaction-mode pooler (PgBouncer, port 6543) that the
+# runtime DATABASE_URL points at: transaction mode shares one backend across sessions
+# and does not support server-side prepared statements, so `db push` fails with
+# `prepared statement "lrupsc_1_0" already exists (SQLSTATE 42P05)`.
+# The IPv4 direct host (db.<ref>.supabase.co) is IPv6-only and unreachable from here,
+# so use the SESSION-mode pooler instead: same host/user, port 5432, which gives a
+# dedicated backend per session and supports prepared statements.
+# Reuse the working DATABASE_URL verbatim (it embeds the credentials the CLI needs)
+# and only swap the transaction-pooler port for the session-pooler port.
+# Allow an explicit override via MIGRATION_DATABASE_URL.
+MIGRATION_DB_URL="${MIGRATION_DATABASE_URL:-${DATABASE_URL/:${POSTGRES_PORT}\//:5432/}}"
+echo "Using session-mode pooler (port 5432) for migrations."
+npx supabase db push --db-url "$MIGRATION_DB_URL" --password "$POSTGRES_PASSWORD" || {
     echo -e "${RED}Error: Database migration failed!${NC}"
     exit 1
 }
@@ -286,14 +308,8 @@ echo "Starting monitoring services (Prometheus, Grafana, Flower, node_exporter, 
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate prometheus grafana node_exporter gpu_exporter flower
 echo -e "${GREEN}Monitoring services started.${NC}"
 
-echo "Starting DO autoscaler..."
-if [ -n "$DIGITALOCEAN_API_TOKEN" ] && [ -n "$MAIN_HOST_IP" ]; then
-    docker compose -f "$COMPOSE_FILE" up -d --force-recreate autoscaler
-    echo -e "${GREEN}Autoscaler started.${NC}"
-else
-    echo -e "${YELLOW}Skipping autoscaler: DIGITALOCEAN_API_TOKEN or MAIN_HOST_IP not set.${NC}"
-    echo "To enable autoscaling, set these in .env.production and re-run deploy."
-fi
+# NOTE: the DO autoscaler is started LAST (Step 10), after the worker snapshot has been
+# (re)baked and its ID wired into .env.production — so it boots with the current snapshot ID.
 
 echo -e "${GREEN}Step 8: Deploying to Remote Host...${NC}"
 echo "Creating directories on remote host..."
@@ -349,34 +365,56 @@ echo -e "${GREEN}Step 9: Checking if DO autoscaler snapshot needs rebuild...${NC
 # Hash all files that affect scalable worker images (Dockerfiles + Python source).
 # If the hash changed since last snapshot bake, rebuild the snapshot.
 SNAPSHOT_HASH_FILE=".last-snapshot-hash"
-CURRENT_HASH=$(find ml-service/ \
+CURRENT_HASH=$( { find ml-service/ \
     -name '*.py' -o -name 'Dockerfile.fast-parser' -o -name 'Dockerfile.datalab' \
     -o -name "$TTS_DOCKERFILE" -o -name 'run-fast-parser.prod.sh' \
-    -o -name 'run-datalab-parser.prod.sh' -o -name 'run-converter.prod.sh' \
-    | sort | xargs cat | sha256sum | awk '{print $1}')
+    -o -name 'run-datalab-parser.prod.sh' -o -name 'run-converter.prod.sh' ; \
+    echo autoscaler/start-worker.sh ; } | sort | xargs cat | sha256sum | awk '{print $1}')
 
 PREVIOUS_HASH=""
 if [ -f "$SNAPSHOT_HASH_FILE" ]; then
     PREVIOUS_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 fi
 
-if [ "$CURRENT_HASH" != "$PREVIOUS_HASH" ]; then
+# Rebuild if worker code changed OR the converter snapshot id is missing (first run / blanked env).
+if [ "$CURRENT_HASH" != "$PREVIOUS_HASH" ] || [ -z "$DO_CONVERTER_SNAPSHOT_ID" ]; then
     if [ -n "$DIGITALOCEAN_API_TOKEN" ] && [ -n "$DO_SSH_KEY_FINGERPRINT" ]; then
-        echo -e "${YELLOW}Worker code changed since last snapshot — rebuilding DO autoscaler snapshot...${NC}"
-        if ./autoscaler/snapshot_bake.sh; then
+        echo -e "${YELLOW}Worker snapshot out of date — rebuilding DO autoscaler snapshot...${NC}"
+        NEW_ID=""
+        if ./autoscaler/snapshot_bake.sh && [ -s .last-snapshot-id ]; then
+            NEW_ID=$(cat .last-snapshot-id)
+        fi
+        # Only touch the secrets file with a validated numeric id — never write garbage
+        # like "<nil>" (which would corrupt `source .env.production` on the next deploy).
+        if printf '%s' "$NEW_ID" | grep -qE '^[0-9]+$'; then
+            echo "Wiring snapshot ID $NEW_ID into $ENV_FILE..."
+            set_env_var DO_FAST_PARSER_SNAPSHOT_ID    "$NEW_ID" "$ENV_FILE"
+            set_env_var DO_DATALAB_PARSER_SNAPSHOT_ID "$NEW_ID" "$ENV_FILE"
+            set_env_var DO_CONVERTER_SNAPSHOT_ID      "$NEW_ID" "$ENV_FILE"
             echo "$CURRENT_HASH" > "$SNAPSHOT_HASH_FILE"
-            echo -e "${GREEN}Snapshot rebuild completed. Update snapshot IDs in .env.production.${NC}"
+            # Refresh shell env so the autoscaler guard/echo below sees the new IDs.
+            set -a; source "$ENV_FILE"; set +a
+            echo -e "${GREEN}Snapshot rebuilt and .env.production updated (ID: $NEW_ID).${NC}"
         else
-            echo -e "${RED}Snapshot rebuild failed! Autoscaler droplets may use stale code.${NC}"
+            echo -e "${RED}Snapshot rebuild failed (no valid snapshot ID: '${NEW_ID:-<empty>}'). .env.production left unchanged.${NC}"
             echo "Re-run manually: ./autoscaler/snapshot_bake.sh"
         fi
     else
-        echo -e "${YELLOW}Worker code changed but DIGITALOCEAN_API_TOKEN or DO_SSH_KEY_FINGERPRINT not set.${NC}"
+        echo -e "${YELLOW}Worker snapshot out of date but DIGITALOCEAN_API_TOKEN or DO_SSH_KEY_FINGERPRINT not set.${NC}"
         echo "Skipping snapshot rebuild. To rebuild manually:"
         echo "    ./autoscaler/snapshot_bake.sh"
     fi
 else
     echo "Worker code unchanged since last snapshot — skipping rebuild."
+fi
+
+echo -e "${GREEN}Step 10: Starting DO autoscaler...${NC}"
+if [ -n "$DIGITALOCEAN_API_TOKEN" ] && [ -n "$MAIN_HOST_IP" ]; then
+    docker compose -f "$COMPOSE_FILE" up -d --force-recreate autoscaler
+    echo -e "${GREEN}Autoscaler started (snapshot ID: ${DO_CONVERTER_SNAPSHOT_ID:-<unset>}).${NC}"
+else
+    echo -e "${YELLOW}Skipping autoscaler: DIGITALOCEAN_API_TOKEN or MAIN_HOST_IP not set.${NC}"
+    echo "To enable autoscaling, set these in .env.production and re-run deploy."
 fi
 
 echo ""
@@ -401,7 +439,7 @@ echo "    - flower-prod       (localhost:5555)"
 echo "    - autoscaler-prod   (DO droplet autoscaler, metrics :9095)"
 echo ""
 echo "  Remote Host (${REMOTE_HOST}):"
-echo "    - converter-prod    (CPU, convert_queue)"
+echo "    - converter-prod    (CPU, convert_queue + synthesize_queue)"
 echo ""
 echo "  Dashboard access (SSH tunnel):"
 echo "    ssh -L 3000:localhost:3000 -L 5555:localhost:5555 -L 9090:localhost:9090 <server>"
