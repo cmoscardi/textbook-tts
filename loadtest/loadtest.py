@@ -318,20 +318,36 @@ class SupabaseClient:
 
     # ---- Synthesis ----
 
-    async def synthesize(self, token: str, text: str,
-                         file_id: str) -> tuple[float, float]:
-        """Submit synthesis task then poll until audio is ready.
+    async def _download_audio(self, token: str, audio_path: str) -> bytes:
+        """Download a stored sentence MP3 (mirrors supabase-js .download())."""
+        resp = await self._retry_request(
+            "get",
+            f"{self.url}/storage/v1/object/authenticated/files/{audio_path}",
+            headers={"Authorization": f"Bearer {token}", "apikey": self.anon_key},
+            timeout=SYNTH_TIMEOUT,
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"Audio download failed {resp.status_code}: {resp.text[:200]}"
+            )
+        return resp.content
 
-        Returns (total_latency_seconds, audio_duration_seconds).
+    async def synthesize(self, token: str, text: str, file_id: str,
+                         sentence_id: str | None = None) -> tuple[float, float]:
+        """Submit synthesis, poll until the worker stores the MP3, then download it.
+
+        The edge function now returns a storage path (audio_path) instead of audio
+        bytes; the client downloads the file directly under RLS — exactly what the
+        frontend does. Returns (total_latency_seconds, audio_duration_seconds).
         """
         t0 = time.monotonic()
 
-        # Step 1: Submit synthesis task
+        # Step 1: Submit synthesis task (returns audio_path directly on cache hit)
         resp = await self._retry_request(
             "post",
             f"{self.url}/functions/v1/play-sentence",
             headers=self._user_headers(token),
-            json={"text": text, "file_id": file_id},
+            json={"text": text, "file_id": file_id, "sentence_id": sentence_id},
             timeout=SYNTH_TIMEOUT,
         )
         if not resp.is_success:
@@ -339,22 +355,20 @@ class SupabaseClient:
                 f"Synthesis POST failed {resp.status_code}: {resp.text[:500]}"
             )
 
-        # If we got audio back directly (cache hit), return immediately
-        content_type = resp.headers.get("content-type", "")
-        if "audio/" in content_type:
+        body = resp.json()
+
+        # Cache hit — audio_path returned directly
+        if body.get("audio_path"):
+            audio = await self._download_audio(token, body["audio_path"])
             latency = time.monotonic() - t0
-            duration = float(resp.headers.get("X-Audio-Duration", "0") or "0")
-            if duration <= 0:
-                duration = max(len(resp.content) / 16000, 0.5)
-            return latency, duration
+            return latency, max(len(audio) / 16000, 0.5)
 
         # Otherwise we got a task_id back — poll for result
-        body = resp.json()
         task_id = body.get("task_id")
         if not task_id:
             raise RuntimeError(f"No task_id in synthesis response: {body}")
 
-        # Step 2: Poll until audio is ready
+        # Step 2: Poll until the worker reports the stored path, then download
         poll_url = (f"{self.url}/functions/v1/play-sentence"
                     f"?task_id={task_id}")
         while True:
@@ -377,14 +391,12 @@ class SupabaseClient:
                     f"Synthesis poll failed {resp.status_code}: {resp.text[:500]}"
                 )
 
-            content_type = resp.headers.get("content-type", "")
-            if "audio/" in content_type:
+            body = resp.json()
+            if body.get("audio_path"):
+                audio = await self._download_audio(token, body["audio_path"])
                 latency = time.monotonic() - t0
-                duration = float(
-                    resp.headers.get("X-Audio-Duration", "0") or "0"
-                )
-                if duration <= 0:
-                    duration = max(len(resp.content) / 16000, 0.5)
+                duration = float(body.get("duration") or 0) \
+                    or max(len(audio) / 16000, 0.5)
                 return latency, duration
 
             # Still processing — keep polling
@@ -624,7 +636,8 @@ async def run_user(idx: int, client: SupabaseClient, pdf_path: Path,
             if si < len(sentences) and si < max_sentences \
                     and si not in synth_tasks:
                 synth_tasks[si] = asyncio.create_task(
-                    client.synthesize(token, sentences[si]["text"], file_id)
+                    client.synthesize(token, sentences[si]["text"], file_id,
+                                      sentences[si]["sentence_id"])
                 )
 
         # Initial prefetch: sentences 0..PREFETCH_AHEAD
